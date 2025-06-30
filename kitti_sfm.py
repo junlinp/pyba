@@ -222,28 +222,42 @@ def compute_relative_pose_error(gt_poses: np.ndarray, estimated_poses: np.ndarra
     Compute relative pose error between ground truth and estimated poses.
     
     Args:
-        gt_poses: Ground truth poses as (N, 12) array
-        estimated_poses: Estimated poses as (N, 12) array
+        gt_poses: Ground truth poses as (N, 3, 4) array
+        estimated_poses: Estimated poses as (N, 3, 4) array
         
     Returns:
-        error: Average relative pose error
+        Average translation error in meters
     """
-    if len(gt_poses) != len(estimated_poses):
-        raise ValueError("Ground truth and estimated poses must have same length")
-    
     total_error = 0.0
     count = 0
     
     for i in range(1, len(gt_poses)):
-        # Get ground truth relative pose
-        gt_prev = gt_poses[i-1].reshape(3, 4)
-        gt_curr = gt_poses[i].reshape(3, 4)
-        gt_relative = np.linalg.inv(gt_prev) @ gt_curr
+        # Convert 3x4 poses to 4x4 transformation matrices
+        gt_prev_3x4 = gt_poses[i-1].reshape(3, 4)
+        gt_curr_3x4 = gt_poses[i].reshape(3, 4)
+        
+        # Create 4x4 transformation matrices
+        gt_prev_4x4 = np.eye(4)
+        gt_prev_4x4[:3, :4] = gt_prev_3x4
+        
+        gt_curr_4x4 = np.eye(4)
+        gt_curr_4x4[:3, :4] = gt_curr_3x4
+        
+        # Compute relative pose
+        gt_relative = np.linalg.inv(gt_prev_4x4) @ gt_curr_4x4
         
         # Get estimated relative pose
-        est_prev = estimated_poses[i-1].reshape(3, 4)
-        est_curr = estimated_poses[i].reshape(3, 4)
-        est_relative = np.linalg.inv(est_prev) @ est_curr
+        est_prev_3x4 = estimated_poses[i-1].reshape(3, 4)
+        est_curr_3x4 = estimated_poses[i].reshape(3, 4)
+        
+        # Create 4x4 transformation matrices for estimated poses
+        est_prev_4x4 = np.eye(4)
+        est_prev_4x4[:3, :4] = est_prev_3x4
+        
+        est_curr_4x4 = np.eye(4)
+        est_curr_4x4[:3, :4] = est_curr_3x4
+        
+        est_relative = np.linalg.inv(est_prev_4x4) @ est_curr_4x4
         
         # Compute error
         error_matrix = np.linalg.inv(gt_relative) @ est_relative
@@ -295,7 +309,7 @@ def triangulate_points_multiview(keypoints_list: List[np.ndarray], camera_poses:
 def main():
     # Load KITTI data
     reader = KITTIOdometryReader()
-    seq = reader.sequences[0]
+    seq = reader.sequences[5]
     info = reader.get_sequence_info(seq)
     print(f"Sequence {seq} info: {info}")
     calib = reader.load_calibration(seq)
@@ -328,8 +342,11 @@ def main():
     landmark_tracker = LandmarkTracker(min_track_length=3, max_reprojection_error=2.0)
     print("Initialized landmark tracker")
 
+    FRAME_STEP = 10
     # Select a few frames for demo (limit to first 10 frames for quick testing)
-    num_frames = min(10, len(gt_poses))
+    #num_frames = min(FRAME_STEP * 10, len(gt_poses))
+    num_frames = len(gt_poses)
+
     print(f"Processing {num_frames} frames for demo")
     
     # Create debug output directory
@@ -343,10 +360,13 @@ def main():
     prev_keypoints = None  # Store keypoints from previous frame
     prev_descriptors = None  # Store descriptors from previous frame
     
-    for frame_id in range(1, num_frames):
+    # Store keypoints for each frame for later triangulation
+    frame_keypoints = {}  # timestamp -> keypoints array
+    
+    for frame_id in range(FRAME_STEP, num_frames, FRAME_STEP):
         print(f"\nProcessing frame {frame_id}...")
         
-        prev_image = reader.load_image(seq, frame_id - 1, 'left')
+        prev_image = reader.load_image(seq, frame_id - FRAME_STEP, 'left')
         curr_image = reader.load_image(seq, frame_id, 'left')
 
         # Extract features using SuperPoint
@@ -355,22 +375,27 @@ def main():
         keypoint_prev = features_prev['keypoints'].squeeze(0).cpu().numpy()
         keypoint_curr = features_curr['keypoints'].squeeze(0).cpu().numpy()
         
-
+        # Store keypoints for each frame
         if timestamps is not None:
-            prev_timestamp = int(timestamps[frame_id - 1])
+            prev_timestamp = int(timestamps[frame_id - FRAME_STEP])
             curr_timestamp = int(timestamps[frame_id])
         else:
-            prev_timestamp = frame_id - 1
+            prev_timestamp = frame_id - FRAME_STEP
             curr_timestamp = frame_id
         
+        frame_keypoints[prev_timestamp] = keypoint_prev
+        frame_keypoints[curr_timestamp] = keypoint_curr
+        
         match_keypoint_prev, match_keypoint_curr, matches = match_keypoints(features_prev, features_curr)
+        print(f"  Frame {frame_id}: {len(matches)} matches, {len(landmark_tracker.landmarks)} landmarks before adding")
         landmark_tracker.add_matched_frame(prev_timestamp, curr_timestamp, keypoint_prev, keypoint_curr, matches.cpu().numpy())
+        print(f"  Frame {frame_id}: {len(landmark_tracker.landmarks)} landmarks after adding")
             
         # Save debug image
-        debug_path = debug_dir / f"matches_{frame_id-1}_{frame_id}.png"
+        debug_path = debug_dir / f"matches_{frame_id-FRAME_STEP}_{frame_id}.png"
         save_match_debug_image(
             prev_image, curr_image, match_keypoint_prev, match_keypoint_curr, matches, 
-            debug_path, f"{frame_id-1}-{frame_id}"
+            debug_path, f"{frame_id-FRAME_STEP}-{frame_id}"
         )
     
     # triangulate landmarks with the camera poses
@@ -390,15 +415,15 @@ def main():
         camera_poses = []
         
         for timestamp, kp_idx in observations.items():
-            # Get the keypoint from the original keypoint arrays
-            if timestamp < len(keypoint_prev) and kp_idx < len(keypoint_prev):
-                # This is a simplified approach - in reality we need to track which frame each keypoint came from
-                keypoints_list.append(keypoint_prev[kp_idx])
+            # Get the keypoint from the correct frame
+            if timestamp in frame_keypoints and kp_idx < len(frame_keypoints[timestamp]):
+                keypoints_list.append(frame_keypoints[timestamp][kp_idx])
             else:
                 # Fallback to landmark keypoint
                 keypoints_list.append(landmark.keypoint)
-            # Get camera pose for this timestamp
-            camera_poses.append(gt_transforms[timestamp])
+            # Get camera pose for this timestamp - convert timestamp to frame index
+            frame_idx = timestamp if timestamp < len(gt_transforms) else timestamp % len(gt_transforms)
+            camera_poses.append(gt_transforms[frame_idx])
         
         # Triangulate the landmark
         landmark.position_3d = triangulate_points_multiview(keypoints_list, camera_poses, K)
@@ -409,12 +434,55 @@ def main():
     points_3d = []
     observations = []  # (landmark_idx, frame_idx, keypoint_2d)
     
-    # For now, let's create a simple test case with ground truth poses and some synthetic observations
-    print(f"\nPreparing bundle adjustment data...")
+    # Use real landmark data instead of synthetic data
+    print(f"\nPreparing bundle adjustment data from landmarks...")
     
-    # Create some synthetic 3D points and observations for testing
-    if len(points_3d) == 0:
-        print("Creating synthetic test data for bundle adjustment...")
+    # Collect landmarks with 3D positions and multiple observations
+    valid_landmarks = []
+    count_valid_3d = 0
+    count_valid_obs = 0
+    sample_positions = []
+    for landmark_id in landmark_tracker.landmarks:
+        landmark = landmark_tracker.landmarks[landmark_id]
+        observations_list = landmark_tracker.landmark_observations[landmark_id]
+        
+        # Count valid 3D
+        if (landmark.position_3d is not None and not np.isnan(landmark.position_3d).any()):
+            count_valid_3d += 1
+            if len(sample_positions) < 5:
+                sample_positions.append(landmark.position_3d)
+        # Count valid observations
+        if len(observations_list) >= 2:
+            count_valid_obs += 1
+        # Only use landmarks with 3D positions and at least 2 observations
+        if (landmark.position_3d is not None and 
+            not np.isnan(landmark.position_3d).any() and 
+            len(observations_list) >= 2):
+            valid_landmarks.append((landmark_id, landmark, observations_list))
+    print(f"Total landmarks: {len(landmark_tracker.landmarks)}")
+    print(f"Landmarks with valid 3D: {count_valid_3d}")
+    print(f"Landmarks with >=2 observations: {count_valid_obs}")
+    print(f"Sample valid 3D positions: {sample_positions}")
+    print(f"Found {len(valid_landmarks)} valid landmarks for bundle adjustment")
+    
+    if len(valid_landmarks) > 0:
+        # Use real landmark data
+        points_3d = np.array([landmark.position_3d for _, landmark, _ in valid_landmarks])
+        
+        # Create observations for each landmark
+        for landmark_idx, (landmark_id, landmark, observations_list) in enumerate(valid_landmarks):
+            for timestamp, kp_idx in observations_list.items():
+                # Get the 2D keypoint from the correct frame
+                if timestamp in frame_keypoints and kp_idx < len(frame_keypoints[timestamp]):
+                    keypoint_2d = frame_keypoints[timestamp][kp_idx]
+                    # Convert timestamp to frame index for bundle adjustment
+                    frame_idx = timestamp if timestamp < num_frames else timestamp % num_frames
+                    observations.append((landmark_idx, frame_idx, keypoint_2d))
+        
+        print(f"Bundle adjustment data: {len(points_3d)} points, {len(observations)} observations, {num_frames} cameras")
+    else:
+        # Fallback to synthetic data if no valid landmarks
+        print("No valid landmarks found, creating synthetic test data for bundle adjustment...")
         # Create a few synthetic 3D points
         synthetic_points = np.array([
             [1.0, 0.0, 5.0],
@@ -445,36 +513,36 @@ def main():
                 point_2d += np.random.normal(0, 1.0, 2)
                 
                 observations.append((point_idx, frame_idx, point_2d))
-    
-    points_3d = np.array(points_3d)
-    camera_poses = np.array([gt_transforms[i] for i in range(num_frames)])
-    
-    print(f"Bundle adjustment data: {len(points_3d)} points, {len(observations)} observations, {len(camera_poses)} cameras")
 
     # Run bundle adjustment
     from bundle_adjustment import BundleAdjuster
     ba = BundleAdjuster(fix_first_pose=True, fix_intrinsics=True)
-    optimized_camera_poses, optimized_points_3d, reprojection_error = ba.run(points_3d, observations, camera_poses, K)
-    
-    # Display bundle adjustment results
-    print(f"\nBundle Adjustment Results:")
-    print(f"Initial points: {len(points_3d)}")
+    summary_tuple, optimized_camera_poses, optimized_points_3d = ba.run(points_3d, observations, gt_transforms[:num_frames], K)
+    summary_obj = summary_tuple[0]  # pyceres.SolverSummary
+    print(f"Optimized camera poses: {len(optimized_camera_poses)}")
     print(f"Optimized points: {len(optimized_points_3d)}")
-    print(f"Final reprojection error: {reprojection_error:.4f} pixels")
-    
-    # Compare with ground truth poses (if using ground truth as initial)
-    if len(optimized_camera_poses) > 1:
-        pose_error = compute_relative_pose_error(
-            gt_poses[:num_frames].reshape(-1, 12), 
-            np.array([pose[:3, :4].flatten() for pose in optimized_camera_poses])
-        )
-        print(f"Relative pose error vs ground truth: {pose_error:.4f} meters")
-    
-    # Use optimized_camera_poses, optimized_points_3d for further processing/visualization
+    print(f"Final reprojection error: {summary_obj.final_cost:.4f} pixels")
+    # print(f"Relative pose error vs ground truth: {compute_relative_pose_error(gt_transforms[:num_frames], optimized_camera_poses):.4f} meters")
+
+
+    # compare the optimized camera poses with the ground truth camera poses
+    print(f"Comparing optimized camera poses with ground truth camera poses...")
+    for i in range(len(optimized_camera_poses)):
+        optimized_pose = optimized_camera_poses[i]
+        gt_pose = gt_transforms[i]
+        print(f"Optimized pose {i}: {optimized_pose}")
+        print(f"Ground truth pose {i}: {gt_pose}")
+        print(f"Relative pose error: {np.linalg.norm(optimized_pose[:3, 3] - gt_pose[:3, 3])} meters")
+
 
     print(f"\nProcessing completed. Debug images saved to: {debug_dir}")
     print(f"Ground truth poses loaded successfully for sequence {seq}")
     print(f"Total poses: {len(gt_poses)}, Trajectory length: {total_distance:.2f}m")
+
+    # output the optimized points 3d to a ply file
+    save_pointcloud_ply(optimized_points_3d, np.ones((len(optimized_points_3d), 3)), "optimized_points_3d.ply")
+    # output the optimized camera poses to a txt file
+    np.savetxt("optimized_camera_poses.txt", optimized_camera_poses)
 
 
 if __name__ == "__main__":

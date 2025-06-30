@@ -79,11 +79,15 @@ class LandmarkTracker:
         """
         for match in matches:
             kp0_idx, kp1_idx = match[0], match[1]
+            # Check if keypoints are already associated with landmarks
             landmark_id0 = self.get_landmark_id_or_generate(timestamp0, kp0_idx, keypoints0[kp0_idx, :])
             landmark_id1 = self.get_landmark_id_or_generate(timestamp1, kp1_idx, keypoints1[kp1_idx, :])
 
-            #  merge two landmarks into one since they are the same landmark
-            self.merge_landmarks(landmark_id0, landmark_id1)
+            if landmark_id0 != landmark_id1:
+                self.merge_landmarks(landmark_id0, landmark_id1)
+            else:
+                print(f"  Frame {timestamp0}: {kp0_idx} and {kp1_idx} are already the same landmark")
+                # else: already the same landmark, nothing to do
 
     def merge_landmarks(self, landmark_id0: int, landmark_id1: int):
         """
@@ -106,17 +110,33 @@ class LandmarkTracker:
 
     def change_landmark_id(self, landmark_id: int, new_landmark_id: int):
         """
-        Change the landmark ID of a landmark.
+        Change the landmark ID of a landmark, merging all observations and updating references.
         """
         if landmark_id == new_landmark_id:
             return
 
-        observations = self.landmark_observations[landmark_id].copy()
+        # Merge observations
+        obs_from = self.landmark_observations[landmark_id]
+        obs_to = self.landmark_observations.get(new_landmark_id, {})
+        merged_obs = obs_to.copy()
+        merged_obs.update(obs_from)
+        self.landmark_observations[new_landmark_id] = merged_obs
         del self.landmark_observations[landmark_id]
-        self.landmark_observations[new_landmark_id] = observations.copy()
 
-        for frame_id, kp_idx in observations.items():
+        # Update frame_landmarks to point to new_landmark_id
+        for frame_id, kp_idx in obs_from.items():
             self.frame_landmarks[frame_id][kp_idx] = new_landmark_id
-        
-        self.landmarks[new_landmark_id] = self.landmarks[landmark_id]
-        del self.landmarks[landmark_id]
+
+        # Optionally, merge 3D position/keypoint (keep the one with more observations or just keep new_landmark_id's)
+        # Here, we keep the one with more observations
+        if new_landmark_id in self.landmarks and landmark_id in self.landmarks:
+            if len(merged_obs) >= 2:
+                # Prefer the one with more observations
+                self.landmarks[new_landmark_id] = self.landmarks[new_landmark_id]
+            else:
+                self.landmarks[new_landmark_id] = self.landmarks[landmark_id]
+        elif landmark_id in self.landmarks:
+            self.landmarks[new_landmark_id] = self.landmarks[landmark_id]
+        # Remove the old landmark
+        if landmark_id in self.landmarks:
+            del self.landmarks[landmark_id]
