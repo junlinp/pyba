@@ -1,231 +1,366 @@
 #!/usr/bin/env python3
 """
-Bundle Adjustment Implementation
+Bundle Adjustment using pyceres and pycolmap
 
-Uses pyceres with automatic differentiation for efficient bundle adjustment.
+This module provides bundle adjustment functionality using pyceres for optimization
+and pycolmap for cost functions and reconstruction data structures.
 """
 
 import numpy as np
-from typing import List, Tuple, Optional
-import cv2
 import pyceres
+from typing import List, Tuple, Optional
+import torch
+import einops
 
-class ReprojectionCostFunction(pyceres.CostFunction):
-    """
-    Cost function for reprojection error in bundle adjustment.
-    """
-    
-    def __init__(self, observed_2d, K):
-        super().__init__()
-        self.observed_2d = observed_2d
+
+class CameraModel:
+    def __init__(self,  K: np.ndarray):
         self.K = K
-        self.set_num_residuals(2)
-        self.set_parameter_block_sizes([6, 3])  # pose parameters, point parameters
+        self.fx = K[0, 0]
+        self.fy = K[1, 1]
+        self.cx = K[0, 2]
+        self.cy = K[1, 2]
+
+    def project(self, X: np.ndarray) -> np.ndarray:
+        """
+        Project 3D points to 2D points.
+        """
+        X = X.reshape(-1, 3)
+        X = X @ self.K.T
+        X = X / X[:, 2:3]
+        return X[:, :2]
+
+    # return function value and jacobian
+    def project_tensor(self, X: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Project 3D points to 2D points.
+        """
+        # X should be requested gradient
+        X = X.view(-1, 3)
+        X.retain_grad()  # Enable gradient retention for non-leaf tensor
+        
+        # Convert K to tensor with same device and dtype as X
+        K_tensor = torch.tensor(self.K, device=X.device, dtype=X.dtype)
+        X_proj = X @ K_tensor.T
+        X_proj = X_proj / X_proj[:, 2:3]
+        
+        # Compute Jacobians for each component
+        jacobians = []
+        for i in range(2):  # x and y components
+            if X.grad is not None:
+                X.grad.zero_()
+            X_proj[0, i].backward(retain_graph=True)
+            jacobians.append(X.grad.clone())
+        
+        return X_proj[:, :2], torch.stack(jacobians, dim=0).squeeze(1)
+
+def skew_symmetric(v):
+    # v: (3,)
+    return torch.stack([
+        torch.stack([torch.zeros_like(v[0]), -v[2], v[1]]),
+        torch.stack([v[2], torch.zeros_like(v[0]), -v[0]]),
+        torch.stack([-v[1], v[0], torch.zeros_like(v[0])])
+    ])
+
+def transform_tensor(pose_camera_to_world: torch.Tensor, X: torch.Tensor) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+    """
+    Transform 3D points to 3D points.
+    pose_camera_to_world: [6] vector, [t, R]
+    X: [3] tensor
+    """
+    translation = pose_camera_to_world[:3]
+    lie_algebra = pose_camera_to_world[3:]
+
+    # Convert Lie algebra to rotation matrix using differentiable operations
+    theta = torch.norm(lie_algebra)
+    I = torch.eye(3, device=lie_algebra.device, dtype=lie_algebra.dtype)
+    if theta < 1e-6:
+        K = skew_symmetric(lie_algebra)
+        R = I + K
+    else:
+        k = lie_algebra / theta
+        K = skew_symmetric(k)
+        R = I + torch.sin(theta) * K + (1 - torch.cos(theta)) * (K @ K)
+
+    # Transform point from world to camera coordinates
+    point_in_camera = R.T @ (X - translation)
+    print(f"point_in_camera: {point_in_camera.shape}")
     
-    def Evaluate(self, parameters, residuals, jacobians):
-        """
-        Evaluate the cost function.
+    jacobian_pose_camera_to_world = []
+    jacobian_X = []
+
+    pose_camera_to_world.retain_grad()
+    X.retain_grad()
+
+    for i in range(3):
+        if pose_camera_to_world.grad is not None:
+            pose_camera_to_world.grad.zero_()
+        if X.grad is not None:
+            X.grad.zero_()
         
-        Args:
-            parameters: List of parameter blocks [pose_params, point_params]
-            residuals: Output residuals (2,)
-            jacobians: Output Jacobians (optional)
-        """
-        pose_params = parameters[0]  # [6] - Rodrigues rotation (3) + translation (3)
-        point_params = parameters[1]  # [3] - 3D point coordinates
+        point_in_camera[i].backward(retain_graph=True)
+
+        assert pose_camera_to_world.grad is not None
+        assert X.grad is not None
+        jacobian_pose_camera_to_world.append(pose_camera_to_world.grad.clone())
+        jacobian_X.append(X.grad.clone())
+
+    # should be (3, 6)
+    jacobian_pose_camera_to_world = torch.stack(jacobian_pose_camera_to_world, dim=0)
+    assert jacobian_pose_camera_to_world.shape == (3, 6)
+
+    # should be (3, 3)
+    jacobian_X = torch.stack(jacobian_X, dim=0)
+    assert jacobian_X.shape == (3, 3)
+
+    return point_in_camera, [jacobian_pose_camera_to_world, jacobian_X]
+
+class ReprojErrorCost(pyceres.CostFunction):
+    def __init__(self, x_2d: torch.Tensor, camera_model: CameraModel):
+        pyceres.CostFunction.__init__(self)
+        self.set_num_residuals(2)
+        self.set_parameter_block_sizes([6, 3])
+        self.x_2d = x_2d
+        self.camera_model = camera_model
+
+    def Evaluate(self, pose_parameters:np.ndarray, point_3d_parameters:np.ndarray, residuals:np.ndarray, jacobians:np.ndarray):
+        pose_parameters = torch.tensor(pose_parameters, requires_grad=True)
+        point_3d_parameters = torch.tensor(point_3d_parameters, requires_grad=True)
+
+        point_in_camera, jacobians_transform = transform_tensor(pose_parameters, point_3d_parameters)
+        x_2d_pred, jacobians_camera_model = self.camera_model.project_tensor(point_in_camera)
         
-        # Extract rotation and translation
-        rvec = pose_params[:3]
-        tvec = pose_params[3:]
+        # Compute residuals: predicted - observed
+        residual_tensor = x_2d_pred - self.x_2d
+        residuals[:] = residual_tensor.detach().numpy()
         
-        # Convert Rodrigues to rotation matrix
-        theta = np.linalg.norm(rvec)
-        if theta < 1e-8:
-            R = np.eye(3)
-        else:
-            k = rvec / theta
-            K_cross = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
-            R = np.eye(3) + np.sin(theta) * K_cross + (1 - np.cos(theta)) * (K_cross @ K_cross)
-        
-        # Transform 3D point to camera coordinates
-        point_cam = R @ point_params + tvec
-        
-        # Project to image plane
-        point_2d_homog = self.K @ point_cam
-        point_2d = point_2d_homog[:2] / point_2d_homog[2]
-        
-        # Compute residual
-        residuals[0] = point_2d[0] - self.observed_2d[0]
-        residuals[1] = point_2d[1] - self.observed_2d[1]
-        
-        # Compute Jacobians if requested
         if jacobians is not None:
-            # This is a simplified Jacobian computation
-            # In practice, you might want to use automatic differentiation or compute full Jacobians
-            if jacobians[0] is not None:  # Pose Jacobian
-                # Simplified: set to identity for now
-                jacobians[0][:] = 0.0
-                jacobians[0][0, 0] = 1.0  # dx/drx
-                jacobians[0][1, 1] = 1.0  # dy/dry
+            # Jacobian chain rule: d(residual)/d(pose) = d(residual)/d(point_in_camera) * d(point_in_camera)/d(pose)
+            # jacobians_camera_model: [2, 3], jacobians_transform[0]: [3, 6]
+            if jacobians[0] is not None:
+                jacobians[0][:] = (jacobians_camera_model @ jacobians_transform[0]).detach().numpy()
             
-            if jacobians[1] is not None:  # Point Jacobian
-                # Simplified: set to identity for now
-                jacobians[1][:] = 0.0
-                jacobians[1][0, 0] = 1.0  # dx/dX
-                jacobians[1][1, 1] = 1.0  # dy/dY
+            # d(residual)/d(point_3d) = d(residual)/d(point_in_camera) * d(point_in_camera)/d(point_3d)
+            # jacobians_camera_model: [2, 3], jacobians_transform[1]: [3, 3]
+            if jacobians[1] is not None:
+                jacobians[1][:] = (jacobians_camera_model @ jacobians_transform[1]).detach().numpy()
         
         return True
 
 class BundleAdjuster:
     """
-    Bundle adjustment optimizer using pyceres with automatic differentiation.
+    Bundle adjustment optimizer using pyceres and pycolmap.
     """
     
-    def __init__(self, fix_first_pose=True, fix_intrinsics=True, max_iterations=100):
+    def __init__(self, fix_first_pose: bool = True, fix_intrinsics: bool = True):
+        """
+        Initialize the bundle adjuster.
+        
+        Args:
+            fix_first_pose: Whether to fix the first camera pose
+            fix_intrinsics: Whether to fix camera intrinsics
+        """
         self.fix_first_pose = fix_first_pose
         self.fix_intrinsics = fix_intrinsics
-        self.max_iterations = max_iterations
+    
+    def create_reconstruction_from_data(self, points_3d: np.ndarray, 
+                                      observations: List[Tuple[int, int, np.ndarray]], 
+                                      camera_poses: List[np.ndarray], 
+                                      intrinsics: np.ndarray) :
+        """
+        Create a pycolmap reconstruction from the input data.
         
-    def _pose_to_params(self, camera_poses: np.ndarray) -> np.ndarray:
-        """Convert 4x4 camera poses to optimization parameters (rotation + translation)."""
-        num_poses = len(camera_poses)
-        params = np.zeros(num_poses * 6)  # 6 DOF per pose (3 rotation + 3 translation)
+        Args:
+            points_3d: 3D points as (N, 3) array
+            observations: List of (point_idx, frame_idx, point_2d) tuples
+            camera_poses: List of 4x4 camera pose matrices
+            intrinsics: 3x3 camera intrinsics matrix
+            
+        Returns:
+            pycolmap.Reconstruction object
+        """
+        rec = pycolmap.Reconstruction()
         
-        for i in range(num_poses):
-            pose = camera_poses[i]
+        # Add camera
+        w, h = 1242, 375  # KITTI image dimensions
+        fx, fy = intrinsics[0, 0], intrinsics[1, 1]
+        cx, cy = intrinsics[0, 2], intrinsics[1, 2]
+        
+        cam = pycolmap.Camera(
+            model="SIMPLE_PINHOLE",
+            width=w,
+            height=h,
+            params=np.array([fx, cx, cy]),
+            camera_id=0,
+        )
+        rec.add_camera(cam)
+        
+        # Add 3D points
+        for i, point_3d in enumerate(points_3d):
+            rec.add_point3D(point_3d, pycolmap.Track(), np.zeros(3))
+        
+        # Add images and observations
+        for frame_idx, pose in enumerate(camera_poses):
+            # Convert 4x4 pose to rotation and translation
             R = pose[:3, :3]
             t = pose[:3, 3]
             
-            # Convert rotation matrix to Rodrigues vector
-            rvec = cv2.Rodrigues(R)[0].flatten()
+            # Create rotation and translation objects
+            rotation = pycolmap.Rotation3d(R)
+            translation = t
             
-            # Store rotation and translation
-            params[i*6:i*6+3] = rvec
-            params[i*6+3:i*6+6] = t
+            # Create rigid transform
+            cam_from_world = pycolmap.Rigid3d(rotation, translation)
             
-        return params
-    
-    def _params_to_pose(self, params: np.ndarray, num_poses: int) -> np.ndarray:
-        """Convert optimization parameters back to 4x4 camera poses."""
-        camera_poses = np.zeros((num_poses, 4, 4))
+            # Create image
+            im = pycolmap.Image(
+                id=frame_idx,
+                name=str(frame_idx),
+                camera_id=cam.camera_id,
+                cam_from_world=cam_from_world,
+            )
+            
+            # Add observations for this image
+            points2d = []
+            for point_idx, obs_frame_idx, point_2d in observations:
+                if obs_frame_idx == frame_idx:
+                    points2d.append(pycolmap.Point2D(point_2d, point_idx))
+            
+            im.points2D = pycolmap.ListPoint2D(points2d)
+            rec.add_image(im)
         
-        for i in range(num_poses):
-            rvec = params[i*6:i*6+3]
-            t = params[i*6+3:i*6+6]
-            
-            # Convert Rodrigues vector to rotation matrix
-            R = cv2.Rodrigues(rvec)[0]
-            
-            # Build 4x4 pose matrix
-            pose = np.eye(4)
-            pose[:3, :3] = R
-            pose[:3, 3] = t
-            
-            camera_poses[i] = pose
-            
-        return camera_poses
+        return rec
     
-    def _project_point(self, point_3d: np.ndarray, pose: np.ndarray, K: np.ndarray) -> np.ndarray:
-        """Project a 3D point to 2D using camera pose and intrinsics."""
-        # Transform point to camera coordinates
-        point_cam = pose[:3, :3] @ point_3d + pose[:3, 3]
-        
-        # Project to image plane
-        point_2d_homog = K @ point_cam
-        point_2d = point_2d_homog[:2] / point_2d_homog[2]
-        
-        return point_2d
-    
-    def run(self, points_3d: np.ndarray, observations: List[Tuple], 
-            camera_poses: np.ndarray, intrinsics: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
+    def define_problem(self, rec) -> pyceres.Problem:
         """
-        Run bundle adjustment using pyceres with automatic differentiation.
+        Define the bundle adjustment problem.
         
         Args:
-            points_3d: (N, 3) array of 3D points
-            observations: list of (landmark_idx, frame_idx, keypoint_2d)
-            camera_poses: (M, 4, 4) array of camera poses
-            intrinsics: (3, 3) camera intrinsics matrix
+            rec: pycolmap.Reconstruction object
             
         Returns:
-            optimized_camera_poses, optimized_points_3d, final_reprojection_error
+            pyceres.Problem object
         """
-        num_poses = len(camera_poses)
-        num_points = len(points_3d)
+        prob = pyceres.Problem()
+        loss = pyceres.TrivialLoss()
         
-        print(f"Bundle adjustment: {num_poses} cameras, {num_points} points, {len(observations)} observations")
+        for im in rec.images.values():
+            cam = rec.cameras[im.camera_id]
+            for p in im.points2D:
+                if p.point3D_id in rec.points3D:
+                    # Create cost function for reprojection error
+                    cost = pycolmap.cost_functions.ReprojErrorCost(
+                        cam.model, p.xy
+                    )
+                    # Add residual block with pose and point parameters
+                    pose = im.cam_from_world
+                    params = [
+                        pose.rotation.quat,
+                        pose.translation,
+                        rec.points3D[p.point3D_id].xyz,
+                        cam.params,
+                    ]
+                    prob.add_residual_block(cost, loss, params)
+                    
+                    # Set quaternion manifold for rotation
+                    prob.set_manifold(
+                        pose.rotation.quat, pyceres.EigenQuaternionManifold()
+                    )
         
-        # Prepare initial parameters
-        pose_params = self._pose_to_params(camera_poses)
-        point_params = points_3d.copy()
+        # Fix camera intrinsics if requested
+        if self.fix_intrinsics:
+            for cam in rec.cameras.values():
+                prob.set_parameter_block_constant(cam.params)
         
-        # Set up pyceres problem
-        problem = pyceres.Problem()
+        # Fix first pose if requested
+        if self.fix_first_pose and len(rec.images) > 0:
+            first_image = rec.images[0]
+            prob.set_parameter_block_constant(first_image.cam_from_world.rotation.quat)
+            prob.set_parameter_block_constant(first_image.cam_from_world.translation)
         
-        # Add camera pose parameter blocks
-        for i in range(num_poses):
-            # Extract the 6 parameters for this pose
-            pose_block = pose_params[i*6:(i+1)*6]
-            problem.add_parameter_block(pose_block, 6)
-            if i == 0 and self.fix_first_pose:
-                problem.set_parameter_block_constant(pose_block)
+        return prob
+    
+    def solve(self, prob: pyceres.Problem) -> pyceres.SolverSummary:
+        """
+        Solve the bundle adjustment problem.
         
-        # Add 3D point parameter blocks
-        for j in range(num_points):
-            problem.add_parameter_block(point_params[j], 3)
-        
-        # Add reprojection error residuals
-        for landmark_idx, frame_idx, keypoint_2d in observations:
-            if frame_idx >= num_poses:
-                continue
-                
-            # Create cost function
-            cost_function = ReprojectionCostFunction(keypoint_2d, intrinsics)
+        Args:
+            prob: pyceres.Problem object
             
-            # Add residual block
-            problem.add_residual_block(
-                cost_function, 
-                None,  # loss function (None = squared loss)
-                [pose_params[frame_idx*6:(frame_idx+1)*6], point_params[landmark_idx]]
-            )
+        Returns:
+            pyceres.SolverSummary object
+        """
+        print(f"Problem: {prob.num_parameter_blocks()} parameter blocks, "
+              f"{prob.num_parameters()} parameters, "
+              f"{prob.num_residual_blocks()} residual blocks, "
+              f"{prob.num_residuals()} residuals")
         
-        # Set up solver options
         options = pyceres.SolverOptions()
-        options.max_num_iterations = self.max_iterations
+        options.linear_solver_type = pyceres.LinearSolverType.DENSE_QR
         options.minimizer_progress_to_stdout = True
-        options.linear_solver_type = pyceres.LinearSolverType.SPARSE_SCHUR
-        options.sparse_linear_algebra_library_type = pyceres.SparseLinearAlgebraLibraryType.SUITE_SPARSE
+        options.num_threads = -1
         
-        # Solve the problem
         summary = pyceres.SolverSummary()
-        pyceres.solve(options, problem, summary)
+        pyceres.solve(options, prob, summary)
         
-        print(f"Bundle adjustment completed!")
         print(summary.BriefReport())
+        return summary
+    
+    def run(self, points_3d: np.ndarray, 
+            observations: List[Tuple[int, int, np.ndarray]], 
+            camera_poses: List[np.ndarray], 
+            intrinsics: np.ndarray) -> Tuple[List[np.ndarray], np.ndarray, float]:
+        """
+        Run bundle adjustment.
         
-        # Convert back to 4x4 poses
-        optimized_camera_poses = self._params_to_pose(pose_params, num_poses)
-        optimized_points_3d = point_params
-        
-        # Compute final reprojection error
-        final_errors = []
-        for landmark_idx, frame_idx, keypoint_2d in observations:
-            if frame_idx >= num_poses:
-                continue
-                
-            point_3d = optimized_points_3d[landmark_idx]
-            pose = optimized_camera_poses[frame_idx]
+        Args:
+            points_3d: Initial 3D points as (N, 3) array
+            observations: List of (point_idx, frame_idx, point_2d) tuples
+            camera_poses: Initial camera poses as list of 4x4 matrices
+            intrinsics: Camera intrinsics as 3x3 matrix
             
-            # Project 3D point to 2D
-            projected_2d = self._project_point(point_3d, pose, intrinsics)
-            
-            # Compute reprojection error
-            error = projected_2d - keypoint_2d
-            final_errors.extend(error)
+        Returns:
+            Tuple of (optimized_camera_poses, optimized_points_3d, final_reprojection_error)
+        """
+        print("Bundle adjustment: {} cameras, {} points, {} observations".format(
+            len(camera_poses), len(points_3d), len(observations)))
         
-        final_errors = np.array(final_errors)
-        final_reprojection_error = np.sqrt(np.mean(final_errors**2))
+        # Create reconstruction
+        rec = self.create_reconstruction_from_data(points_3d, observations, camera_poses, intrinsics)
         
-        print(f"Final reprojection error: {final_reprojection_error:.4f} pixels")
+        # Define problem
+        problem = self.define_problem(rec)
         
-        return optimized_camera_poses, optimized_points_3d, final_reprojection_error 
+        # Solve
+        summary = self.solve(problem)
+        
+        # Extract results
+        optimized_camera_poses = []
+        for i in range(len(rec.images)):
+            im = rec.images[i]
+            pose = np.eye(4)
+            pose[:3, :3] = im.cam_from_world.rotation.rotation_matrix()
+            pose[:3, 3] = im.cam_from_world.translation
+            optimized_camera_poses.append(pose)
+        
+        optimized_points_3d = np.array([p.xyz for p in rec.points3D.values()])
+        
+        # Calculate final reprojection error
+        final_reprojection_error = summary.final_cost / summary.num_residuals if summary.num_residuals > 0 else 0.0
+        
+        return optimized_camera_poses, optimized_points_3d, final_reprojection_error
+
+
+def run_bundle_adjustment_pyceres(points_3d, points_2d, camera_poses, intrinsics):
+    """
+    Legacy function for backward compatibility.
+    """
+    ba = BundleAdjuster(fix_first_pose=True, fix_intrinsics=True)
+    
+    # Convert points_2d to observations format
+    observations = []
+    for i, point_2d_list in enumerate(points_2d):
+        for j, point_2d in enumerate(point_2d_list):
+            observations.append((j, i, point_2d))
+    
+    return ba.run(points_3d, observations, camera_poses, intrinsics) 

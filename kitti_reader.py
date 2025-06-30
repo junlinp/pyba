@@ -28,7 +28,7 @@ class KITTIOdometryReader:
     A class to read and process KITTI odometry dataset.
     """
     
-    def __init__(self, dataset_path: str = "/mnt/rbd0/KITTI/odometry/dataset/sequences"):
+    def __init__(self, dataset_path: str = "/mnt/nas/share-all/junlinp/PublicDataSet/KITTI/color/dataset/sequences"):
         """
         Initialize the KITTI odometry reader.
         
@@ -130,7 +130,7 @@ class KITTIOdometryReader:
         Returns:
             np.ndarray: Poses as numpy array (N, 12) - flattened 3x4 transformation matrices
         """
-        poses_file = Path("/mnt/rbd0/KITTI/odometry/dataset/poses") / f"{sequence_id:02d}.txt"
+        poses_file = Path("/mnt/nas/share-all/junlinp/PublicDataSet/KITTI/dataset/sequences/poses") / f"{sequence_id:02d}.txt"
         if not poses_file.exists():
             raise FileNotFoundError(f"Poses file not found: {poses_file}")
         poses = np.loadtxt(str(poses_file))
@@ -153,7 +153,7 @@ class KITTIOdometryReader:
         right_images = len(list((sequence_path / "image_3").glob("*.png")))
         
         # Count poses
-        poses_file = Path("/mnt/rbd0/KITTI/odometry/dataset/poses") / f"{sequence_id:02d}.txt"
+        poses_file = Path("/mnt/nas/share-all/junlinp/PublicDataSet/KITTI/dataset/sequences/poses") / f"{sequence_id:02d}.txt"
         num_poses = 0
         if poses_file.exists():
             with open(poses_file, 'r') as f:

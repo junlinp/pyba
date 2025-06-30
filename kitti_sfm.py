@@ -104,8 +104,9 @@ def visualize_sfm(camera_poses, points_3d):
 
 def to_tensor(img_rgb: np.ndarray) -> torch.Tensor:
     img_rgb = img_rgb / 255.0  # shape (H, W, 3), float32
-    # convert to (C, H, W)
-    return torch.from_numpy(img_rgb.transpose(2, 0, 1)).unsqueeze(0).float()
+    tensor = torch.from_numpy(img_rgb.transpose(2, 0, 1)).unsqueeze(0).float()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    return tensor.to(device)
 
 
 def save_match_debug_image(img0, img1, kpts0, kpts1, matches, output_path, frame_pair):
@@ -351,8 +352,8 @@ def main():
         # Extract features using SuperPoint
         features_prev = extract_superpoint_features(to_tensor(prev_image))
         features_curr = extract_superpoint_features(to_tensor(curr_image))
-        keypoint_prev = features_prev['keypoints'].squeeze(0).numpy()
-        keypoint_curr = features_curr['keypoints'].squeeze(0).numpy()
+        keypoint_prev = features_prev['keypoints'].squeeze(0).cpu().numpy()
+        keypoint_curr = features_curr['keypoints'].squeeze(0).cpu().numpy()
         
 
         if timestamps is not None:
@@ -363,7 +364,7 @@ def main():
             curr_timestamp = frame_id
         
         match_keypoint_prev, match_keypoint_curr, matches = match_keypoints(features_prev, features_curr)
-        landmark_tracker.add_matched_frame(prev_timestamp, curr_timestamp, keypoint_prev, keypoint_curr, matches.numpy())
+        landmark_tracker.add_matched_frame(prev_timestamp, curr_timestamp, keypoint_prev, keypoint_curr, matches.cpu().numpy())
             
         # Save debug image
         debug_path = debug_dir / f"matches_{frame_id-1}_{frame_id}.png"
