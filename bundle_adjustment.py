@@ -45,22 +45,10 @@ class ReprojErrorCost(pyceres.CostFunction):
         w = pose_parameters[3:]
         R = angle_axis_to_rotation_matrix(w)
         point_in_camera = R.T @ (point_3d_parameters - t)
-
         x_2d_pred = self.camera_model.project(point_in_camera.reshape(1, 3)).flatten()
         residuals[:] = x_2d_pred - self.x_2d
-        if jacobians is not None:
-            if jacobians[0] is not None:
-                self._compute_pose_jacobian(pose_parameters, point_3d_parameters, jacobians[0])
-            if jacobians[1] is not None:
-                self._compute_point_jacobian(pose_parameters, point_3d_parameters, jacobians[1])
-        return True
 
-    def _compute_pose_jacobian(self, pose_parameters: np.ndarray, point_3d_parameters: np.ndarray, jacobian: np.ndarray):
-        t = pose_parameters[:3]
-        w = pose_parameters[3:]
-        R = angle_axis_to_rotation_matrix(w)
-
-        point_in_camera = R.T @ (point_3d_parameters - t)
+        # compute the jacobian
         fx = self.camera_model.K[0, 0]
         fy = self.camera_model.K[1, 1]
         x, y, z = point_in_camera
@@ -72,26 +60,18 @@ class ReprojErrorCost(pyceres.CostFunction):
         J_t = -R.T
         point_world_minus_t = point_3d_parameters - t
         J_w = R.T @ skew_symmetric(point_world_minus_t) @ so3_right_jacobian(-w)
-        J = np.zeros((2, 6), dtype=np.float64)
-        J[:, :3] = J_camera @ J_t
-        J[:, 3:] = J_camera @ J_w
-        jacobian[:] = J.flatten('C')
+        J_pose = np.zeros((2, 6), dtype=np.float64)
+        J_pose[:, :3] = J_camera @ J_t
+        J_pose[:, 3:] = J_camera @ J_w
+        J_point = J_camera @ R.T
 
-    def _compute_point_jacobian(self, pose_parameters: np.ndarray, point_3d_parameters: np.ndarray, jacobian: np.ndarray):
-        t = pose_parameters[:3]
-        w = pose_parameters[3:]
-        R = angle_axis_to_rotation_matrix(w)
-        point_in_camera = R.T @ (point_3d_parameters - t)
-        fx = self.camera_model.K[0, 0]
-        fy = self.camera_model.K[1, 1]
-        x, y, z = point_in_camera
-        z_inv = 1.0 / z if z != 0 else 1e-10
-        J_camera = np.array([
-            [fx * z_inv, 0, -fx * x * z_inv**2],
-            [0, fy * z_inv, -fy * y * z_inv**2]
-        ])
-        J = J_camera @ R.T
-        jacobian[:] = J.flatten('C')
+        if jacobians is not None:
+            if jacobians[0] is not None:
+                jacobians[0][:] = J_pose.flatten('C')
+            if jacobians[1] is not None:
+                jacobians[1][:] = J_point.flatten('C')
+        return True
+    
 
 class BundleAdjuster:
     """
@@ -210,7 +190,7 @@ class BundleAdjuster:
         
         summary = pyceres.SolverSummary()
         pyceres.solve(options, prob, summary)
-        print(summary.BriefReport())
+        print(summary.FullReport())
         return summary
     
     def run(self, points_3d: dict[int, np.ndarray], 

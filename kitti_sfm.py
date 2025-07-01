@@ -27,7 +27,9 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from kitti_reader import KITTIOdometryReader
-from landmark_tracker import Landmark, LandmarkTracker
+from landmark_tracker import LandmarkTracker, triangulate_points_multiview
+from bundle_adjustment import BundleAdjuster
+from rotation import angle_axis_to_rotation_matrix
 
 # Import LightGlue (includes SuperPoint)
 try:
@@ -267,45 +269,7 @@ def compute_relative_pose_error(gt_poses: np.ndarray, estimated_poses: np.ndarra
     
     return float(total_error / count if count > 0 else 0.0)
 
-def triangulate_points_multiview(keypoints_list: List[np.ndarray], camera_poses: List[np.ndarray], K: np.ndarray) -> np.ndarray:
-    """
-    Triangulate 3D point from multiple views using DLT method.
-    
-    Args:
-        keypoints_list: List of 2D keypoints (N, 2) for each view
-        camera_poses: List of 4x4 camera poses for each view. from camera to world.
-        K: Camera intrinsics matrix (3, 3)
-        
-    Returns:
-        point_3d: 3D point (3,)
-    """
-    if len(keypoints_list) < 2:
-        return np.zeros(3)
-    
-    # Build the DLT matrix
-    A = []
-    for i, (kp, pose) in enumerate(zip(keypoints_list, camera_poses)):
-        pose_inv = np.linalg.inv(pose)
-        # Get projection matrix P = K * [R|t]
-        P = K @ pose_inv[:3, :4]
-        
-        # Normalize homogeneous coordinates
-        x, y = kp[0], kp[1]
-        
-        # Add two rows to A matrix for each view
-        A.append(x * P[2, :] - P[0, :])
-        A.append(y * P[2, :] - P[1, :])
-    
-    A = np.array(A)
-    
-    # Solve using SVD
-    U, S, Vt = np.linalg.svd(A)
-    point_4d = Vt[-1, :]
-    
-    # Convert to 3D coordinates
-    point_3d = point_4d[:3] / point_4d[3]
-    
-    return point_3d
+
 
 def project_point_to_image(point_3d: np.ndarray, camera_pose: np.ndarray, K: np.ndarray):
     rotation = camera_pose[:3, :3]
@@ -375,12 +339,7 @@ def main():
     timestamp_to_gt_poses = {}
     for i, pose in enumerate(gt_poses):
         timestamp_to_gt_poses[int(timestamps[i])] = pose
-
-    
-    prev_matches = None  # Store matches from previous frame
-    prev_keypoints = None  # Store keypoints from previous frame
-    prev_descriptors = None  # Store descriptors from previous frame
-    
+   
     # Store keypoints for each frame for later triangulation
     frame_keypoints = {}  # timestamp -> keypoints array
     
@@ -457,8 +416,10 @@ def main():
             # Get the keypoint from the correct frame
             keypoints_list.append(landmark_tracker.landmark_keypoints[landmark_id][timestamp][kp_idx])
             camera_poses_list.append(timestamp_to_gt_poses[timestamp])
-        # Triangulate the landmark
-        landmark.position_3d = triangulate_points_multiview(keypoints_list, camera_poses_list, K)
+        if not landmark.triangulated:
+            # Triangulate the landmark
+            landmark.position_3d = triangulate_points_multiview(keypoints_list, camera_poses_list, K)
+            landmark.triangulated = True
     print(f"Landmarks with 3D positions: {sum(1 for l in landmark_tracker.landmarks.values() if l.position_3d is not None and not np.isnan(l.position_3d).any())}")
 
     project_landmarks_to_images(images, landmark_tracker, camera_poses, K)
@@ -467,40 +428,12 @@ def main():
         cv2.imwrite(f"debug_matches_seq_{seq}/landmarks_{timestamp}.png", image)
 
     # Prepare data for bundle adjustment
-    points_3d = {}
-    observations = []  # (landmark_id, timestamp, keypoint_2d)
+    points_3d = landmark_tracker.get_landmark_point3ds()
+    observations = landmark_tracker.observation_relations_for_ba()
     
-    # Use real landmark data instead of synthetic data
-    print(f"\nPreparing bundle adjustment data from landmarks...")
-    
-    # Collect landmarks with 3D positions and multiple observations
-    valid_landmarks = []
-
-    for landmark_id in landmark_tracker.landmarks:
-        landmark = landmark_tracker.landmarks[landmark_id]
-        observations_list = landmark_tracker.landmark_observations[landmark_id]
-        if len(observations_list) >= 2:
-            valid_landmarks.append((landmark_id, landmark, observations_list))
-
-    print(f"Total landmarks: {len(landmark_tracker.landmarks)}")
-    print(f"Found {len(valid_landmarks)} valid landmarks for bundle adjustment")
-    
-    if len(valid_landmarks) > 0:
-        # Use real landmark data
-        # Create observations for each landmark
-        for landmark_id, landmark, observations_list in valid_landmarks:
-            for timestamp, kp_idx in observations_list.items():
-                # Get the 2D keypoint from the correct frame
-                keypoint_2d = frame_keypoints[timestamp][kp_idx]
-                # Convert timestamp to frame index for bundle adjustment
-                observations.append((landmark_id, timestamp, keypoint_2d))
-                points_3d[landmark_id] = landmark.position_3d
-        
-        print(f"Bundle adjustment data: {len(points_3d)} points, {len(observations)} observations, {len(camera_poses)} cameras")
+    print(f"Bundle adjustment data: {len(points_3d)} points, {len(observations)} observations, {len(camera_poses)} cameras")
 
     # Run bundle adjustment
-    from bundle_adjustment import BundleAdjuster
-    from rotation import angle_axis_to_rotation_matrix
     ba = BundleAdjuster(fix_first_pose=True, fix_intrinsics=True)
     
     # Add some noise to initial poses to test optimization (except first pose which is fixed)
