@@ -162,7 +162,7 @@ def triangulate_points(kpts0: np.ndarray, kpts1: np.ndarray, K: np.ndarray, R: n
     pts3d = (pts4d[:3] / pts4d[3]).T  # shape (N, 3)
     return pts3d
 
-def save_pointcloud_ply(points_3d, colors, output_path):
+def save_pointcloud_ply(points_3d: dict[int, np.ndarray], colors: dict[int, np.ndarray], output_path: str):
     """
     Save point cloud as PLY file.
     
@@ -185,14 +185,14 @@ def save_pointcloud_ply(points_3d, colors, output_path):
         f.write("end_header\n")
         
         # Write points and colors
-        for i in range(len(points_3d)):
-            x, y, z = points_3d[i]
-            r, g, b = colors[i]
+        for landmark_id, point_3d in points_3d.items():
+            x, y, z = point_3d
+            r, g, b = colors[landmark_id]
             f.write(f"{x:.6f} {y:.6f} {z:.6f} {int(r)} {int(g)} {int(b)}\n")
     
     print(f"Saved point cloud to: {output_path}")
 
-def poses_to_transforms(poses: np.ndarray) -> np.ndarray:
+def poses_to_transforms(poses: list[np.ndarray]) -> list[np.ndarray]:
     """
     Convert KITTI poses (N, 12) to 4x4 transformation matrices (N, 4, 4).
     
@@ -202,18 +202,18 @@ def poses_to_transforms(poses: np.ndarray) -> np.ndarray:
     Returns:
         transforms: 4x4 transformation matrices as (N, 4, 4) array
     """
-    N = poses.shape[0]
-    transforms = np.zeros((N, 4, 4))
+    N = len(poses)
+    transforms = []
     
     for i in range(N):
         # Reshape pose to 3x4
-        pose_3x4 = poses[i].reshape(3, 4)
+        pose_3x4 = poses[i]
         
         # Create 4x4 transformation matrix
         transform = np.eye(4)
         transform[:3, :4] = pose_3x4
         
-        transforms[i] = transform
+        transforms.append(transform)
     
     return transforms
 
@@ -273,7 +273,7 @@ def triangulate_points_multiview(keypoints_list: List[np.ndarray], camera_poses:
     
     Args:
         keypoints_list: List of 2D keypoints (N, 2) for each view
-        camera_poses: List of 4x4 camera poses for each view
+        camera_poses: List of 4x4 camera poses for each view. from camera to world.
         K: Camera intrinsics matrix (3, 3)
         
     Returns:
@@ -285,8 +285,9 @@ def triangulate_points_multiview(keypoints_list: List[np.ndarray], camera_poses:
     # Build the DLT matrix
     A = []
     for i, (kp, pose) in enumerate(zip(keypoints_list, camera_poses)):
+        pose_inv = np.linalg.inv(pose)
         # Get projection matrix P = K * [R|t]
-        P = K @ pose[:3, :4]
+        P = K @ pose_inv[:3, :4]
         
         # Normalize homogeneous coordinates
         x, y = kp[0], kp[1]
@@ -306,6 +307,26 @@ def triangulate_points_multiview(keypoints_list: List[np.ndarray], camera_poses:
     
     return point_3d
 
+def project_point_to_image(point_3d: np.ndarray, camera_pose: np.ndarray, K: np.ndarray):
+    rotation = camera_pose[:3, :3]
+    translation = camera_pose[:3, 3]
+    point_3d_camera = rotation.T @ (point_3d - translation)
+    point_2d_homo = K @ point_3d_camera
+    point_2d = point_2d_homo[:2] / point_2d_homo[2]
+    return point_2d
+
+def project_landmarks_to_images(images: dict[int, np.ndarray], landmark_tracker: LandmarkTracker, camera_poses: dict[int, np.ndarray], K: np.ndarray):
+    for landmark_id, landmark in landmark_tracker.landmarks.items():
+        for timestamp, kp_idx in landmark_tracker.landmark_observations[landmark_id].items():
+            image = images[timestamp]
+            keypoint_2d = landmark_tracker.landmark_keypoints[landmark_id][timestamp][kp_idx]
+            camera_pose = camera_poses[timestamp]
+            point_3d = landmark.position_3d 
+            projected_keypoint = project_point_to_image(point_3d, camera_pose, K)
+            cv2.circle(image, (int(projected_keypoint[0]), int(projected_keypoint[1])), 2, (0, 0, 255), -1)
+            cv2.circle(image, (int(keypoint_2d[0]), int(keypoint_2d[1])), 2, (0, 255, 0), -1)
+    return images
+
 def main():
     # Load KITTI data
     reader = KITTIOdometryReader()
@@ -320,9 +341,6 @@ def main():
     gt_poses = reader.load_poses(seq)
     print(f"Loaded {len(gt_poses)} ground truth poses")
     
-    # Convert poses to 4x4 transformation matrices
-    gt_transforms = poses_to_transforms(gt_poses)
-    print(f"Converted poses to {len(gt_transforms)} 4x4 transformation matrices")
     
     # Analyze ground truth trajectory
     trajectory = reader.get_trajectory(seq)
@@ -344,7 +362,7 @@ def main():
 
     FRAME_STEP = 10
     # Select a few frames for demo (limit to first 10 frames for quick testing)
-    #num_frames = min(FRAME_STEP * 10, len(gt_poses))
+    # num_frames = min(FRAME_STEP * 2, len(gt_poses))
     num_frames = len(gt_poses)
 
     print(f"Processing {num_frames} frames for demo")
@@ -354,8 +372,11 @@ def main():
     debug_dir.mkdir(exist_ok=True)
 
     # Process frames with landmark tracking
-    all_camera_poses = [np.eye(4)]  # First camera at origin
-    camera_poses_history = [np.eye(4)]  # Track all camera poses
+    timestamp_to_gt_poses = {}
+    for i, pose in enumerate(gt_poses):
+        timestamp_to_gt_poses[int(timestamps[i])] = pose
+
+    
     prev_matches = None  # Store matches from previous frame
     prev_keypoints = None  # Store keypoints from previous frame
     prev_descriptors = None  # Store descriptors from previous frame
@@ -363,7 +384,17 @@ def main():
     # Store keypoints for each frame for later triangulation
     frame_keypoints = {}  # timestamp -> keypoints array
     
+    camera_poses = {}
+    images = {}
+
     for frame_id in range(FRAME_STEP, num_frames, FRAME_STEP):
+        prev_frame_timestamp = timestamps[frame_id - FRAME_STEP]
+        frame_timestamp = timestamps[frame_id]
+        camera_poses[prev_frame_timestamp] = gt_poses[frame_id - FRAME_STEP]
+        camera_poses[frame_timestamp] = gt_poses[frame_id]
+        images[prev_frame_timestamp] = reader.load_image(seq, frame_id - FRAME_STEP, 'left')
+        images[frame_timestamp] = reader.load_image(seq, frame_id, 'left')
+
         print(f"\nProcessing frame {frame_id}...")
         
         prev_image = reader.load_image(seq, frame_id - FRAME_STEP, 'left')
@@ -390,6 +421,14 @@ def main():
         print(f"  Frame {frame_id}: {len(matches)} matches, {len(landmark_tracker.landmarks)} landmarks before adding")
         landmark_tracker.add_matched_frame(prev_timestamp, curr_timestamp, keypoint_prev, keypoint_curr, matches.cpu().numpy())
         print(f"  Frame {frame_id}: {len(landmark_tracker.landmarks)} landmarks after adding")
+
+        for match in matches:
+            kp_idx0, kp_idx1 = match[0], match[1]
+            kp0 = keypoint_prev[kp_idx0]
+            kp1 = keypoint_curr[kp_idx1]
+            cv2.circle(prev_image, (int(kp0[0]), int(kp0[1])), 2, (0, 0, 255), -1)
+            cv2.circle(curr_image, (int(kp1[0]), int(kp1[1])), 2, (0, 0, 255), -1)
+        cv2.imwrite(f"debug_matches_seq_{seq}/matches_{frame_id-FRAME_STEP}_{frame_id}_cycle.png", np.concatenate((prev_image, curr_image), axis=1))
             
         # Save debug image
         debug_path = debug_dir / f"matches_{frame_id-FRAME_STEP}_{frame_id}.png"
@@ -412,126 +451,89 @@ def main():
             
         # Collect keypoints and camera poses for this landmark
         keypoints_list = []
-        camera_poses = []
+        camera_poses_list = []
         
         for timestamp, kp_idx in observations.items():
             # Get the keypoint from the correct frame
-            if timestamp in frame_keypoints and kp_idx < len(frame_keypoints[timestamp]):
-                keypoints_list.append(frame_keypoints[timestamp][kp_idx])
-            else:
-                # Fallback to landmark keypoint
-                keypoints_list.append(landmark.keypoint)
-            # Get camera pose for this timestamp - convert timestamp to frame index
-            frame_idx = timestamp if timestamp < len(gt_transforms) else timestamp % len(gt_transforms)
-            camera_poses.append(gt_transforms[frame_idx])
-        
+            keypoints_list.append(landmark_tracker.landmark_keypoints[landmark_id][timestamp][kp_idx])
+            camera_poses_list.append(timestamp_to_gt_poses[timestamp])
         # Triangulate the landmark
-        landmark.position_3d = triangulate_points_multiview(keypoints_list, camera_poses, K)
-    
+        landmark.position_3d = triangulate_points_multiview(keypoints_list, camera_poses_list, K)
     print(f"Landmarks with 3D positions: {sum(1 for l in landmark_tracker.landmarks.values() if l.position_3d is not None and not np.isnan(l.position_3d).any())}")
 
+    project_landmarks_to_images(images, landmark_tracker, camera_poses, K)
+    # save the images with the landmarks projected to them
+    for timestamp, image in images.items():
+        cv2.imwrite(f"debug_matches_seq_{seq}/landmarks_{timestamp}.png", image)
+
     # Prepare data for bundle adjustment
-    points_3d = []
-    observations = []  # (landmark_idx, frame_idx, keypoint_2d)
+    points_3d = {}
+    observations = []  # (landmark_id, timestamp, keypoint_2d)
     
     # Use real landmark data instead of synthetic data
     print(f"\nPreparing bundle adjustment data from landmarks...")
     
     # Collect landmarks with 3D positions and multiple observations
     valid_landmarks = []
-    count_valid_3d = 0
-    count_valid_obs = 0
-    sample_positions = []
+
     for landmark_id in landmark_tracker.landmarks:
         landmark = landmark_tracker.landmarks[landmark_id]
         observations_list = landmark_tracker.landmark_observations[landmark_id]
-        
-        # Count valid 3D
-        if (landmark.position_3d is not None and not np.isnan(landmark.position_3d).any()):
-            count_valid_3d += 1
-            if len(sample_positions) < 5:
-                sample_positions.append(landmark.position_3d)
-        # Count valid observations
         if len(observations_list) >= 2:
-            count_valid_obs += 1
-        # Only use landmarks with 3D positions and at least 2 observations
-        if (landmark.position_3d is not None and 
-            not np.isnan(landmark.position_3d).any() and 
-            len(observations_list) >= 2):
             valid_landmarks.append((landmark_id, landmark, observations_list))
+
     print(f"Total landmarks: {len(landmark_tracker.landmarks)}")
-    print(f"Landmarks with valid 3D: {count_valid_3d}")
-    print(f"Landmarks with >=2 observations: {count_valid_obs}")
-    print(f"Sample valid 3D positions: {sample_positions}")
     print(f"Found {len(valid_landmarks)} valid landmarks for bundle adjustment")
     
     if len(valid_landmarks) > 0:
         # Use real landmark data
-        points_3d = np.array([landmark.position_3d for _, landmark, _ in valid_landmarks])
-        
         # Create observations for each landmark
-        for landmark_idx, (landmark_id, landmark, observations_list) in enumerate(valid_landmarks):
+        for landmark_id, landmark, observations_list in valid_landmarks:
             for timestamp, kp_idx in observations_list.items():
                 # Get the 2D keypoint from the correct frame
-                if timestamp in frame_keypoints and kp_idx < len(frame_keypoints[timestamp]):
-                    keypoint_2d = frame_keypoints[timestamp][kp_idx]
-                    # Convert timestamp to frame index for bundle adjustment
-                    frame_idx = timestamp if timestamp < num_frames else timestamp % num_frames
-                    observations.append((landmark_idx, frame_idx, keypoint_2d))
+                keypoint_2d = frame_keypoints[timestamp][kp_idx]
+                # Convert timestamp to frame index for bundle adjustment
+                observations.append((landmark_id, timestamp, keypoint_2d))
+                points_3d[landmark_id] = landmark.position_3d
         
-        print(f"Bundle adjustment data: {len(points_3d)} points, {len(observations)} observations, {num_frames} cameras")
-    else:
-        # Fallback to synthetic data if no valid landmarks
-        print("No valid landmarks found, creating synthetic test data for bundle adjustment...")
-        # Create a few synthetic 3D points
-        synthetic_points = np.array([
-            [1.0, 0.0, 5.0],
-            [0.0, 1.0, 5.0],
-            [-1.0, 0.0, 5.0],
-            [0.0, -1.0, 5.0],
-            [2.0, 2.0, 8.0],
-        ])
-        
-        points_3d = synthetic_points
-        observations = []
-        
-        # Create observations for each point in each camera
-        for point_idx in range(len(synthetic_points)):
-            for frame_idx in range(num_frames):
-                # Project 3D point to 2D using ground truth pose
-                pose = gt_transforms[frame_idx]
-                point_3d = synthetic_points[point_idx]
-                
-                # Transform to camera coordinates
-                point_cam = pose[:3, :3] @ point_3d + pose[:3, 3]
-                
-                # Project to image plane
-                point_2d_homog = K @ point_cam
-                point_2d = point_2d_homog[:2] / point_2d_homog[2]
-                
-                # Add some noise to simulate real observations
-                point_2d += np.random.normal(0, 1.0, 2)
-                
-                observations.append((point_idx, frame_idx, point_2d))
+        print(f"Bundle adjustment data: {len(points_3d)} points, {len(observations)} observations, {len(camera_poses)} cameras")
 
     # Run bundle adjustment
     from bundle_adjustment import BundleAdjuster
+    from rotation import angle_axis_to_rotation_matrix
     ba = BundleAdjuster(fix_first_pose=True, fix_intrinsics=True)
-    summary_tuple, optimized_camera_poses, optimized_points_3d = ba.run(points_3d, observations, gt_transforms[:num_frames], K)
-    summary_obj = summary_tuple[0]  # pyceres.SolverSummary
+    
+    # Add some noise to initial poses to test optimization (except first pose which is fixed)
+    noisy_poses = gt_poses[:num_frames].copy()
+    for i in range(1, len(noisy_poses)):  # Skip first pose (fixed)
+        # Add small random noise to translation
+        noisy_poses[i][:3, 3] += np.random.normal(0, 0.1, 3)
+        # Add small random noise to rotation (simplified)
+        angle_noise = np.random.normal(0, 0.01, 3)  # Small angle noise
+        R_noise = angle_axis_to_rotation_matrix(angle_noise)
+        noisy_poses[i][:3, :3] = R_noise @ noisy_poses[i][:3, :3]
+    
+    print(f"Added noise to initial poses for testing optimization")
+    
+    summary_obj, optimized_camera_poses, optimized_points_3d = ba.run(points_3d, observations, camera_poses, K)
+
     print(f"Optimized camera poses: {len(optimized_camera_poses)}")
     print(f"Optimized points: {len(optimized_points_3d)}")
     print(f"Final reprojection error: {summary_obj.final_cost:.4f} pixels")
-    # print(f"Relative pose error vs ground truth: {compute_relative_pose_error(gt_transforms[:num_frames], optimized_camera_poses):.4f} meters")
+    
+    # Debug: Check if points actually changed
+    print(f"\nChecking if 3D points changed:")
+    print(f"Initial points shape: {len(points_3d)}")
+    print(f"Optimized points shape: {len(optimized_points_3d)}")
 
-
+    
+    # Debug: Check if poses actually changed
     # compare the optimized camera poses with the ground truth camera poses
     print(f"Comparing optimized camera poses with ground truth camera poses...")
-    for i in range(len(optimized_camera_poses)):
-        optimized_pose = optimized_camera_poses[i]
-        gt_pose = gt_transforms[i]
-        print(f"Optimized pose {i}: {optimized_pose}")
-        print(f"Ground truth pose {i}: {gt_pose}")
+    for timestamp, optimized_pose in optimized_camera_poses.items():
+        gt_pose = timestamp_to_gt_poses[timestamp]
+        print(f"Optimized pose {timestamp}: {optimized_pose}")
+        print(f"Ground truth pose {timestamp}: {gt_pose}")
         print(f"Relative pose error: {np.linalg.norm(optimized_pose[:3, 3] - gt_pose[:3, 3])} meters")
 
 
@@ -539,10 +541,21 @@ def main():
     print(f"Ground truth poses loaded successfully for sequence {seq}")
     print(f"Total poses: {len(gt_poses)}, Trajectory length: {total_distance:.2f}m")
 
+    # draw ground truth trajectory x-z plane with green, and draw optimized trajectory x-z plane with red in the same figure
+    plt.figure(figsize=(10, 10))
+    optimized_trajectory = np.array([optimized_camera_poses[timestamp][:3, 3] for timestamp in optimized_camera_poses])
+    plt.plot(trajectory[:, 0], trajectory[:, 2], color='green', label='Ground Truth Trajectory')
+    plt.plot(optimized_trajectory[:, 0], optimized_trajectory[:, 2], color='red', label='Optimized Trajectory')
+    plt.xlabel('X')
+    plt.ylabel('Z')
+    plt.title('Ground Truth Trajectory')
+    plt.legend()
+    plt.show()
+
+
+    print(f"Optimized camera poses: {len(optimized_camera_poses)}")
     # output the optimized points 3d to a ply file
-    save_pointcloud_ply(optimized_points_3d, np.ones((len(optimized_points_3d), 3)), "optimized_points_3d.ply")
-    # output the optimized camera poses to a txt file
-    np.savetxt("optimized_camera_poses.txt", optimized_camera_poses)
+    save_pointcloud_ply(optimized_points_3d, {landmark_id: np.ones(3) for landmark_id in optimized_points_3d}, "optimized_points_3d.ply")
 
 
 if __name__ == "__main__":

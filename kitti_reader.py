@@ -133,7 +133,13 @@ class KITTIOdometryReader:
         poses_file = Path("/mnt/nas/share-all/junlinp/PublicDataSet/KITTI/dataset/sequences/poses") / f"{sequence_id:02d}.txt"
         if not poses_file.exists():
             raise FileNotFoundError(f"Poses file not found: {poses_file}")
-        poses = np.loadtxt(str(poses_file))
+        poses = []
+        with open(poses_file, 'r') as f:
+            for line in f:
+                T = np.fromstring(line, sep=' ').reshape(3, 4)
+                pose = np.eye(4)
+                pose[:3, :4] = T
+                poses.append(pose)
         return poses
     
     def get_sequence_info(self, sequence_id: int) -> Dict[str, int]:
@@ -202,7 +208,7 @@ class KITTIOdometryReader:
             np.ndarray: Trajectory as numpy array (N, 3) - x, y, z positions
         """
         poses = self.load_poses(sequence_id)
-        trajectory = poses[:, [3, 7, 11]]  # Extract translation components
+        trajectory = np.array([pose[:3, 3] for pose in poses])  # Extract translation components
         return trajectory
     
     def visualize_trajectory(self, sequence_id: int) -> None:
@@ -240,7 +246,10 @@ class KITTIOdometryReader:
         if not times_file.exists():
             raise FileNotFoundError(f"Times file not found: {times_file}")
         
-        timestamps = np.loadtxt(str(times_file))
+        timestamps = []
+        with open(times_file, 'r') as f:
+            for line in f:
+                timestamps.append(int(float(line) * 1e9))
         return timestamps
     
     def get_timestamp(self, sequence_id: int, frame_id: int) -> float:

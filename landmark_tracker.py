@@ -19,9 +19,8 @@ from collections import defaultdict
 @dataclass
 class Landmark:
     """Represents a 3D landmark point with tracking information."""
-    def __init__(self, keypoint: np.ndarray, position_3d: np.ndarray):
+    def __init__(self, position_3d: np.ndarray):
         self.position_3d = position_3d
-        self.keypoint = keypoint
 
 class LandmarkTracker:
     """
@@ -49,6 +48,8 @@ class LandmarkTracker:
 
         # landmark_id -> {frame_id -> kp_idx}
         self.landmark_observations: Dict[int, Dict[int, int]] = {}  # landmark_id -> {frame_id -> kp_idx}
+        # landmark_id -> {timestamp -> kp_idx -> keypoint}
+        self.landmark_keypoints: Dict[int, Dict[int, Dict[int, np.ndarray]]] = {}
 
     def get_landmark_id_or_generate(self, image_timestamp: int, keypoint_index:int, keypoint: np.ndarray) -> int:
         """
@@ -60,8 +61,9 @@ class LandmarkTracker:
 
         if keypoint_index not in self.frame_landmarks[image_timestamp]: 
             self.frame_landmarks[image_timestamp][keypoint_index] = self.next_landmark_id
-            self.landmarks[self.next_landmark_id] = Landmark(keypoint, np.zeros(3))
+            self.landmarks[self.next_landmark_id] = Landmark(np.zeros(3))
             self.landmark_observations[self.next_landmark_id] = {image_timestamp: keypoint_index}
+            self.landmark_keypoints[self.next_landmark_id] = {image_timestamp: {keypoint_index: keypoint}}
             self.next_landmark_id += 1
 
         return self.frame_landmarks[image_timestamp][keypoint_index]
@@ -86,8 +88,9 @@ class LandmarkTracker:
             if landmark_id0 != landmark_id1:
                 self.merge_landmarks(landmark_id0, landmark_id1)
             else:
-                print(f"  Frame {timestamp0}: {kp0_idx} and {kp1_idx} are already the same landmark")
                 # else: already the same landmark, nothing to do
+                self.landmark_keypoints[landmark_id0][timestamp0][kp0_idx] = keypoints0[kp0_idx, :]
+                self.landmark_keypoints[landmark_id1][timestamp1][kp1_idx] = keypoints1[kp1_idx, :]
 
     def merge_landmarks(self, landmark_id0: int, landmark_id1: int):
         """
@@ -126,6 +129,18 @@ class LandmarkTracker:
         # Update frame_landmarks to point to new_landmark_id
         for frame_id, kp_idx in obs_from.items():
             self.frame_landmarks[frame_id][kp_idx] = new_landmark_id
+            # Ensure the sub-dictionaries exist
+            if frame_id not in self.landmark_keypoints[new_landmark_id]:
+                self.landmark_keypoints[new_landmark_id][frame_id] = {}
+            if frame_id in self.landmark_keypoints[landmark_id] and kp_idx in self.landmark_keypoints[landmark_id][frame_id]:
+                self.landmark_keypoints[new_landmark_id][frame_id][kp_idx] = self.landmark_keypoints[landmark_id][frame_id][kp_idx]
+                del self.landmark_keypoints[landmark_id][frame_id][kp_idx]
+                # Clean up empty sub-dicts
+                if not self.landmark_keypoints[landmark_id][frame_id]:
+                    del self.landmark_keypoints[landmark_id][frame_id]
+        # Clean up old landmark_id if empty
+        if landmark_id in self.landmark_keypoints and not self.landmark_keypoints[landmark_id]:
+            del self.landmark_keypoints[landmark_id]
 
         # Optionally, merge 3D position/keypoint (keep the one with more observations or just keep new_landmark_id's)
         # Here, we keep the one with more observations
