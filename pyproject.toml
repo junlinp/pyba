@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pyba"
 version = "0.1.0"
-description = "Landmark Tracking and Bundle Adjustment"
+description = "Python Bundle Adjustment and Landmark Tracking for KITTI SFM"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "junlinp", email = "junlinp@deepmirror.com"}
+    {name = "Assistant", email = "assistant@example.com"}
 ]
 maintainers = [
-    {name = "junlinp", email = "junlinp@deepmirror.com"}
+    {name = "Assistant", email = "assistant@example.com"}
 ]
 keywords = ["computer-vision", "sfm", "kitti", "bundle-adjustment", "landmark-tracking", "visual-odometry"]
 
@@ -60,17 +60,17 @@ full = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/kitti-sfm"
-Documentation = "https://github.com/yourusername/kitti-sfm#readme"
-Repository = "https://github.com/yourusername/kitti-sfm.git"
-"Bug Tracker" = "https://github.com/yourusername/kitti-sfm/issues"
+Homepage = "https://github.com/yourusername/pyba"
+Documentation = "https://github.com/yourusername/pyba#readme"
+Repository = "https://github.com/yourusername/pyba.git"
+"Bug Tracker" = "https://github.com/yourusername/pyba/issues"
 
 [project.scripts]
-kitti-sfm = "kitti_sfm:main"
+kitti-sfm = "pyba.kitti_sfm:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["*"]
+include = ["pyba*"]
 exclude = [
     "tests*",
     "test_*",

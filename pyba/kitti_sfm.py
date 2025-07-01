@@ -26,10 +26,10 @@ import cv2
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
-from kitti_reader import KITTIOdometryReader
-from landmark_tracker import LandmarkTracker, triangulate_points_multiview
-from bundle_adjustment import BundleAdjuster
-from rotation import angle_axis_to_rotation_matrix
+from .kitti_reader import KITTIOdometryReader
+from .landmark_tracker import LandmarkTracker, triangulate_points_multiview
+from .bundle_adjustment import BundleAdjuster
+from .rotation import angle_axis_to_rotation_matrix
 
 # Import LightGlue (includes SuperPoint)
 try:
@@ -465,11 +465,11 @@ def main():
     # Debug: Check if poses actually changed
     # compare the optimized camera poses with the ground truth camera poses
     print(f"Comparing optimized camera poses with ground truth camera poses...")
-    for timestamp, optimized_pose in optimized_camera_poses.items():
-        gt_pose = timestamp_to_gt_poses[timestamp]
-        print(f"Optimized pose {timestamp}: {optimized_pose}")
-        print(f"Ground truth pose {timestamp}: {gt_pose}")
-        print(f"Relative pose error: {np.linalg.norm(optimized_pose[:3, 3] - gt_pose[:3, 3])} meters")
+    # for timestamp, optimized_pose in optimized_camera_poses.items():
+        # gt_pose = timestamp_to_gt_poses[timestamp]
+        # print(f"Optimized pose {timestamp}: {optimized_pose}")
+        # print(f"Ground truth pose {timestamp}: {gt_pose}")
+        # print(f"Relative pose error: {np.linalg.norm(optimized_pose[:3, 3] - gt_pose[:3, 3])} meters")
 
 
     print(f"\nProcessing completed. Debug images saved to: {debug_dir}")

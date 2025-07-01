@@ -8,7 +8,7 @@ This module provides bundle adjustment functionality using pyceres for optimizat
 import numpy as np
 import pyceres
 from typing import List, Tuple
-from rotation import rotation_matrix_to_angle_axis, angle_axis_to_rotation_matrix, so3_right_jacobian, skew_symmetric
+from .rotation import rotation_matrix_to_angle_axis, angle_axis_to_rotation_matrix, so3_right_jacobian, skew_symmetric
 class CameraModel:
     def __init__(self,  K: np.ndarray):
         self.K = K
