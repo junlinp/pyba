@@ -3,18 +3,19 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kitti-sfm"
+name = "pyba"
 version = "0.1.0"
-description = "KITTI SFM Pipeline with Landmark Tracking and Bundle Adjustment"
+description = "Landmark Tracking and Bundle Adjustment"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Assistant", email = "assistant@example.com"}
+    {name = "junlinp", email = "junlinp@deepmirror.com"}
 ]
 maintainers = [
-    {name = "Assistant", email = "assistant@example.com"}
+    {name = "junlinp", email = "junlinp@deepmirror.com"}
 ]
 keywords = ["computer-vision", "sfm", "kitti", "bundle-adjustment", "landmark-tracking", "visual-odometry"]
+
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
