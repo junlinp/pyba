@@ -1,6 +1,11 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = [
+    "scikit-build-core>=0.8.0",
+    "pybind11>=2.10.0",
+    "cmake>=3.18",
+    "ninja"
+]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "pyba"
@@ -38,7 +43,7 @@ dependencies = [
     "torch>=2.0.0",
     "torchvision>=0.15.0",
     "kornia>=0.6.11",
-    "lightglue @ git+https://github.com/cvg/LightGlue.git",
+    #"lightglue @ git+https://github.com/cvg/LightGlue.git",
     "pyceres>=0.0.1; sys_platform != 'win32'",  # Optional dependency, not available on Windows
 ]
 
@@ -161,4 +166,10 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "class .*\\bProtocol\\):",
     "@(abc\\.)?abstractmethod",
-] 
+]
+
+[tool.scikit-build]
+minimum-version = "0.8"
+build-dir = "build"
+wheel.packages = ["pyba"]
+cmake.verbose = true 
