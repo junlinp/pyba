@@ -1,0 +1,30 @@
+include README.md
+include README_gt_poses.md
+include requirements.txt
+include LICENSE
+include pyproject.toml
+# setup.py removed - using pyproject.toml instead
+
+# Include Python source files
+recursive-include *.py
+
+# Include test files (for development)
+recursive-include test_*.py
+recursive-include example_*.py
+
+# Include documentation
+recursive-include docs *.md *.rst *.txt
+
+# Exclude unnecessary files
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.pyd
+global-exclude __pycache__
+global-exclude *.so
+global-exclude .DS_Store
+global-exclude .git*
+global-exclude debug_*
+global-exclude optimized_*
+global-exclude *.ply
+global-exclude *.txt
+global-exclude *.egg-info 

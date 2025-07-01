@@ -504,18 +504,20 @@ def main():
     ba = BundleAdjuster(fix_first_pose=True, fix_intrinsics=True)
     
     # Add some noise to initial poses to test optimization (except first pose which is fixed)
-    noisy_poses = gt_poses[:num_frames].copy()
-    for i in range(1, len(noisy_poses)):  # Skip first pose (fixed)
+    noisy_poses = camera_poses.copy()
+    for timestamp in noisy_poses:  # Skip first pose (fixed)
+        if timestamp == 0:
+            continue
         # Add small random noise to translation
-        noisy_poses[i][:3, 3] += np.random.normal(0, 0.1, 3)
+        noisy_poses[timestamp][:3, 3] += np.random.normal(0, 0.1, 3)
         # Add small random noise to rotation (simplified)
         angle_noise = np.random.normal(0, 0.01, 3)  # Small angle noise
         R_noise = angle_axis_to_rotation_matrix(angle_noise)
-        noisy_poses[i][:3, :3] = R_noise @ noisy_poses[i][:3, :3]
+        noisy_poses[timestamp][:3, :3] = R_noise @ noisy_poses[timestamp][:3, :3]
     
     print(f"Added noise to initial poses for testing optimization")
     
-    summary_obj, optimized_camera_poses, optimized_points_3d = ba.run(points_3d, observations, camera_poses, K)
+    summary_obj, optimized_camera_poses, optimized_points_3d = ba.run(points_3d, observations, noisy_poses, K)
 
     print(f"Optimized camera poses: {len(optimized_camera_poses)}")
     print(f"Optimized points: {len(optimized_points_3d)}")
