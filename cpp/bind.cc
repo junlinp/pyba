@@ -166,7 +166,10 @@ py::tuple ba_solve(
         for (ssize_t j = 0; j < 3; ++j)
             K_eigen(i, j) = K_buf(i, j);
     // observations is a list of tuples (cam_idx, pt_idx, 2x1)
+    std::cout << "[ba_solve] observations iteration" << std::endl;
     for (const auto& [cam_idx, pt_idx, obs] : observations) {
+        std::cout << "[ba_solve] cam_idx: " << cam_idx << std::endl;
+        std::cout << "[ba_solve] pt_idx: " << pt_idx << std::endl;
         std::array<double, 2> obs_parameter;
         auto obs_buf = obs.unchecked<1>();
         obs_parameter[0] = obs_buf(0);
