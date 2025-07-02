@@ -112,17 +112,10 @@ py::tuple ba_solve(
     Observations observations,
     py::array_t<double> K
 ) {
-    std::cout << "[ba_solve] start" << std::endl;
-    std::cout << "[ba_solve] camera_poses: " << camera_poses.size() << std::endl;
-    std::cout << "[ba_solve] point_3ds: " << point_3ds.size() << std::endl;
-    std::cout << "[ba_solve] observations: " << observations.size() << std::endl;
-
     ceres::Problem problem;
     ceres::Solver::Options options;
     ceres::Solver::Summary summary;
-
     std::map<int64_t, std::array<double, 6>> camera_parameters;
-
     int64_t min_cam_indx = std::numeric_limits<int64_t>::max();
     for (const auto& [cam_idx, cam_pose] : camera_poses) {
         std::array<double, 6> camera_parameter;
@@ -135,11 +128,6 @@ py::tuple ba_solve(
         Eigen::Matrix3d R = cam_pose_eigen.block<3, 3>(0, 0);
         Eigen::Vector3d t = cam_pose_eigen.block<3, 1>(0, 3);
         
-        // Debug: Print rotation and translation separately
-        std::cout << "Camera " << cam_idx << " rotation matrix:" << std::endl;
-        std::cout << R << std::endl;
-        std::cout << "Camera " << cam_idx << " translation: " << t.transpose() << std::endl;
-        
         camera_parameter[0] = t[0];
         camera_parameter[1] = t[1];
         camera_parameter[2] = t[2];
@@ -149,15 +137,12 @@ py::tuple ba_solve(
 
     std::map<int64_t, std::array<double, 3>> point_parameters;
     for (const auto& [pt_idx, pt_3d] : point_3ds) {
-        std::cout << "[ba_solve] pt_idx: " << pt_idx << std::endl;
         auto pt_3d_buf = pt_3d.unchecked<1>();
         std::array<double, 3> point_parameter;
         point_parameter[0] = pt_3d_buf(0);
         point_parameter[1] = pt_3d_buf(1);
         point_parameter[2] = pt_3d_buf(2);
         point_parameters[pt_idx] = point_parameter;
-        std::cout << "[ba_solve] pt_idx: " << pt_idx << " point_parameter: " << point_parameter[0] << " " << point_parameter[1] << " " << point_parameter[2] << std::endl;
-        // std::cout << "point_parameter: " << point_parameter[0] << " " << point_parameter[1] << " " << point_parameter[2] << std::endl;
     }
 
 
@@ -170,24 +155,10 @@ py::tuple ba_solve(
         for (ssize_t j = 0; j < 3; ++j)
             K_eigen(i, j) = K_buf(i, j);
     // observations is a list of tuples (cam_idx, pt_idx, 2x1)
-    std::cout << "[ba_solve] observations iteration" << std::endl;
     for (const auto& [cam_idx, pt_idx, obs] : observations) {
-        std::cout << "[ba_solve] cam_idx: " << cam_idx << std::endl;
-        std::cout << "[ba_solve] pt_idx: " << pt_idx << std::endl;
         auto obs_buf = obs.unchecked<1>();
-        std::cout << "[ba_solve] unchecked" << std::endl;
         Eigen::Vector2d observed_keypoint(obs_buf(0), obs_buf(1));
-        std::cout << "[ba_solve] new ReprojectionError" << std::endl;
         ceres::CostFunction* reprojection_error = new ReprojectionError(observed_keypoint, K_eigen);
-        std::cout << "[ba_solve] AddResidualBlock" << std::endl;
-        if (camera_parameters.find(cam_idx) == camera_parameters.end()) {
-            std::cout << "[ba_solve] camera_parameters.find(cam_idx) == camera_parameters.end()" << std::endl;
-            std::cout << "[ba_solve] cam_idx: " << cam_idx << std::endl;
-        }
-        if (point_parameters.find(pt_idx) == point_parameters.end()) {
-            std::cout << "[ba_solve] point_parameters.find(pt_idx) == point_parameters.end()" << std::endl;
-            std::cout << "[ba_solve] pt_idx: " << pt_idx << std::endl;
-        }
         problem.AddResidualBlock(reprojection_error, loss_function, camera_parameters.at(cam_idx).data(), point_parameters.at(pt_idx).data());
     }
 
@@ -200,7 +171,6 @@ py::tuple ba_solve(
     options.minimizer_progress_to_stdout = true;
     options.max_num_iterations = 1024;
     options.num_threads = 1;
-
 
     ceres::Solve(options, &problem, &summary);
     std::cout << summary.FullReport() << std::endl;
