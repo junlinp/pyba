@@ -58,7 +58,7 @@ def multiview_triangulation(keypoints_list: List[np.ndarray], camera_poses: List
         pose_inv = np.linalg.inv(pose)
         point_in_camera = pose_inv[:3, :3] @ point_3d + pose_inv[:3, 3]
         if point_in_camera[2] <= 0.1:
-            return False, np.zeros(3)
+            return False, point_3d
     return True, point_3d
 
 
