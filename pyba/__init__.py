@@ -25,7 +25,7 @@ from .kitti_reader import KITTIOdometryReader
 from .kitti_sfm import (
     extract_superpoint_features,
     match_keypoints,
-    triangulate_points_multiview,
+    multiview_triangulation,
     project_point_to_image,
     poses_to_transforms,
     compute_relative_pose_error

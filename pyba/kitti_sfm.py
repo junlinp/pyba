@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 from .kitti_reader import KITTIOdometryReader
-from .landmark_tracker import LandmarkTracker, triangulate_points_multiview
+from .landmark_tracker import LandmarkTracker, multiview_triangulation
 from .bundle_adjustment import BundleAdjuster
 from .rotation import angle_axis_to_rotation_matrix
 
@@ -298,8 +298,14 @@ def main():
     info = reader.get_sequence_info(seq)
     print(f"Sequence {seq} info: {info}")
     calib = reader.load_calibration(seq)
-    K = calib['P0'][:3, :3]  # Use P0 as intrinsics
+    # P0 is a projection matrix P = K * [R|t], so P0[:3, :3] = K * R
+    # For KITTI, the camera is rectified, so R is identity, so P0[:3, :3] = K
+    # But to be safe, let's extract K properly from the projection matrix
+    P0 = calib['P0']  # 3x4 projection matrix
+    K = P0[:3, :3]  # This should be the camera intrinsics for rectified images
     print(f"Camera intrinsics:\n{K}")
+    print(f"Camera intrinsics shape: {K.shape}")
+    print(f"fx: {K[0,0]}, fy: {K[1,1]}, cx: {K[0,2]}, cy: {K[1,2]}")
 
     # Load ground truth poses
     gt_poses = reader.load_poses(seq)
@@ -326,7 +332,7 @@ def main():
 
     FRAME_STEP = 10
     # Select a few frames for demo (limit to first 10 frames for quick testing)
-    # num_frames = min(FRAME_STEP * 2, len(gt_poses))
+    # num_frames = min(FRAME_STEP * 15, len(gt_poses))
     num_frames = len(gt_poses)
 
     print(f"Processing {num_frames} frames for demo")
@@ -349,6 +355,7 @@ def main():
     for frame_id in range(FRAME_STEP, num_frames, FRAME_STEP):
         prev_frame_timestamp = timestamps[frame_id - FRAME_STEP]
         frame_timestamp = timestamps[frame_id]
+        print(f"frame_id: {frame_id}, prev_frame_timestamp: {prev_frame_timestamp}, frame_timestamp: {frame_timestamp}")
         camera_poses[prev_frame_timestamp] = gt_poses[frame_id - FRAME_STEP]
         camera_poses[frame_timestamp] = gt_poses[frame_id]
         images[prev_frame_timestamp] = reader.load_image(seq, frame_id - FRAME_STEP, 'left')
@@ -365,20 +372,12 @@ def main():
         keypoint_prev = features_prev['keypoints'].squeeze(0).cpu().numpy()
         keypoint_curr = features_curr['keypoints'].squeeze(0).cpu().numpy()
         
-        # Store keypoints for each frame
-        if timestamps is not None:
-            prev_timestamp = int(timestamps[frame_id - FRAME_STEP])
-            curr_timestamp = int(timestamps[frame_id])
-        else:
-            prev_timestamp = frame_id - FRAME_STEP
-            curr_timestamp = frame_id
-        
-        frame_keypoints[prev_timestamp] = keypoint_prev
-        frame_keypoints[curr_timestamp] = keypoint_curr
+        frame_keypoints[prev_frame_timestamp] = keypoint_prev
+        frame_keypoints[frame_timestamp] = keypoint_curr
         
         match_keypoint_prev, match_keypoint_curr, matches = match_keypoints(features_prev, features_curr)
         print(f"  Frame {frame_id}: {len(matches)} matches, {len(landmark_tracker.landmarks)} landmarks before adding")
-        landmark_tracker.add_matched_frame(prev_timestamp, curr_timestamp, keypoint_prev, keypoint_curr, matches.cpu().numpy())
+        landmark_tracker.add_matched_frame(prev_frame_timestamp, frame_timestamp, keypoint_prev, keypoint_curr, matches.cpu().numpy())
         print(f"  Frame {frame_id}: {len(landmark_tracker.landmarks)} landmarks after adding")
 
         for match in matches:
@@ -418,8 +417,14 @@ def main():
             camera_poses_list.append(timestamp_to_gt_poses[timestamp])
         if not landmark.triangulated:
             # Triangulate the landmark
-            landmark.position_3d = triangulate_points_multiview(keypoints_list, camera_poses_list, K)
-            landmark.triangulated = True
+            valid, point_3d = multiview_triangulation(keypoints_list, camera_poses_list, K)
+            if valid:
+                landmark.position_3d = point_3d
+                landmark.triangulated = True
+            else:
+                print(f"Landmark {landmark_id} triangulation failed")
+                landmark.position_3d = np.zeros(3)
+                landmark.triangulated = False
     print(f"Landmarks with 3D positions: {sum(1 for l in landmark_tracker.landmarks.values() if l.position_3d is not None and not np.isnan(l.position_3d).any())}")
 
     project_landmarks_to_images(images, landmark_tracker, camera_poses, K)
@@ -450,11 +455,14 @@ def main():
     
     print(f"Added noise to initial poses for testing optimization")
     
-    summary_obj, optimized_camera_poses, optimized_points_3d = ba.run(points_3d, observations, noisy_poses, K)
+    optimized_camera_poses, optimized_points_3d = ba.run(points_3d, observations, noisy_poses, K)
+    # optimized_camera_poses is a dict of timestamp to 4x4 pose matrix
+    # sort the optimized_camera_poses by timestamp
+    optimized_camera_poses = dict(sorted(optimized_camera_poses.items()))
 
     print(f"Optimized camera poses: {len(optimized_camera_poses)}")
     print(f"Optimized points: {len(optimized_points_3d)}")
-    print(f"Final reprojection error: {summary_obj.final_cost:.4f} pixels")
+    # print(f"Final reprojection error: {summary_obj.final_cost:.4f} pixels")
     
     # Debug: Check if points actually changed
     print(f"\nChecking if 3D points changed:")
@@ -465,12 +473,16 @@ def main():
     # Debug: Check if poses actually changed
     # compare the optimized camera poses with the ground truth camera poses
     print(f"Comparing optimized camera poses with ground truth camera poses...")
-    # for timestamp, optimized_pose in optimized_camera_poses.items():
-        # gt_pose = timestamp_to_gt_poses[timestamp]
+    for timestamp, optimized_pose in optimized_camera_poses.items():
+        gt_pose = timestamp_to_gt_poses[timestamp]
+        gt_translation = gt_pose[:3, 3]
+        optimized_translation = optimized_pose[:3, 3]
+        print(f"timestamp: {timestamp}, gt_translation: {gt_translation}, optimized_translation: {optimized_translation} diff: {np.linalg.norm(gt_translation - optimized_translation)}")
         # print(f"Optimized pose {timestamp}: {optimized_pose}")
         # print(f"Ground truth pose {timestamp}: {gt_pose}")
         # print(f"Relative pose error: {np.linalg.norm(optimized_pose[:3, 3] - gt_pose[:3, 3])} meters")
-
+    
+    print(f"trajectory: {trajectory[:10, :]}")
 
     print(f"\nProcessing completed. Debug images saved to: {debug_dir}")
     print(f"Ground truth poses loaded successfully for sequence {seq}")
@@ -478,7 +490,12 @@ def main():
 
     # draw ground truth trajectory x-z plane with green, and draw optimized trajectory x-z plane with red in the same figure
     plt.figure(figsize=(10, 10))
-    optimized_trajectory = np.array([optimized_camera_poses[timestamp][:3, 3] for timestamp in optimized_camera_poses])
+
+    for timestamp, poses in optimized_camera_poses.items():
+        print(f"timestamp: {timestamp}, optimized_camera_poses[timestamp]: {poses}")
+    optimized_trajectory = np.array([optimized_camera_poses[timestamp][:3, 3] for timestamp in optimized_camera_poses.keys()])
+    print(f"optimized_trajectory shape: {optimized_trajectory.shape}")
+    print(f"optimized_trajectory: {optimized_trajectory}")
     plt.plot(trajectory[:, 0], trajectory[:, 2], color='green', label='Ground Truth Trajectory')
     plt.plot(optimized_trajectory[:, 0], optimized_trajectory[:, 2], color='red', label='Optimized Trajectory')
     plt.xlabel('X')

@@ -48,6 +48,13 @@ public:
         Eigen::Vector3d point_3d_in_camera = rotation.transpose() * (point_3d - translation);
 
         Eigen::Vector3d reprojection = K_ * point_3d_in_camera;
+        // if (reprojection[2] <= 0) {
+        //     std::cout << "camera: " << camera.transpose() << std::endl;
+        //     std::cout << "point_3d: " << point_3d.transpose() << std::endl;
+        //     std::cout << "reprojection: " << reprojection.transpose() << std::endl;
+        //     std::cout << "observed_keypoint: " << observed_keypoint_.transpose() << std::endl;
+        //     return false;
+        // }
 
         residuals[0] = reprojection[0] / reprojection[2] - observed_keypoint_[0];
         residuals[1] = reprojection[1] / reprojection[2] - observed_keypoint_[1];
@@ -110,6 +117,7 @@ py::tuple ba_solve(
     ceres::Solver::Summary summary;
 
     std::map<int64_t, std::array<double, 6>> camera_parameters;
+
     for (const auto& [cam_idx, cam_pose] : camera_poses) {
         std::array<double, 6> camera_parameter;
         auto cam_pose_buf = cam_pose.unchecked<2>();
@@ -117,8 +125,15 @@ py::tuple ba_solve(
         for (ssize_t i = 0; i < 4; ++i)
             for (ssize_t j = 0; j < 4; ++j)
                 cam_pose_eigen(i, j) = cam_pose_buf(i, j);
+        
         Eigen::Matrix3d R = cam_pose_eigen.block<3, 3>(0, 0);
         Eigen::Vector3d t = cam_pose_eigen.block<3, 1>(0, 3);
+        
+        // Debug: Print rotation and translation separately
+        std::cout << "Camera " << cam_idx << " rotation matrix:" << std::endl;
+        std::cout << R << std::endl;
+        std::cout << "Camera " << cam_idx << " translation: " << t.transpose() << std::endl;
+        
         camera_parameter[0] = t[0];
         camera_parameter[1] = t[1];
         camera_parameter[2] = t[2];
@@ -134,31 +149,35 @@ py::tuple ba_solve(
         point_parameter[1] = pt_3d_buf(1);
         point_parameter[2] = pt_3d_buf(2);
         point_parameters[pt_idx] = point_parameter;
+        // std::cout << "point_parameter: " << point_parameter[0] << " " << point_parameter[1] << " " << point_parameter[2] << std::endl;
     }
 
 
 
-    ceres::LossFunction* loss_function = new ceres::HuberLoss(2.0);
 
+    ceres::LossFunction* loss_function = new ceres::HuberLoss(2.0);
+    auto K_buf = K.unchecked<2>();
+    Eigen::Matrix3d K_eigen;
+    for (ssize_t i = 0; i < 3; ++i)
+        for (ssize_t j = 0; j < 3; ++j)
+            K_eigen(i, j) = K_buf(i, j);
     // observations is a list of tuples (cam_idx, pt_idx, 2x1)
     for (const auto& [cam_idx, pt_idx, obs] : observations) {
         std::array<double, 2> obs_parameter;
         auto obs_buf = obs.unchecked<1>();
         obs_parameter[0] = obs_buf(0);
         obs_parameter[1] = obs_buf(1);
-
         Eigen::Vector2d observed_keypoint = Eigen::Map<const Eigen::Vector2d>(obs.data());
-
-        Eigen::Matrix3d K_eigen = Eigen::Map<const Eigen::Matrix3d>(K.data());
-
         ceres::CostFunction* reprojection_error = new ReprojectionError(observed_keypoint, K_eigen);
-        problem.AddResidualBlock(reprojection_error, loss_function, camera_parameters[cam_idx].data(), point_parameters[pt_idx].data());
+        problem.AddResidualBlock(reprojection_error, loss_function, camera_parameters.at(cam_idx).data(), point_parameters.at(pt_idx).data());
     }
+
+    problem.SetParameterBlockConstant(camera_parameters.at(0).data());
 
     options.linear_solver_type = ceres::DENSE_SCHUR;
     options.minimizer_progress_to_stdout = true;
-    options.max_num_iterations = 100;
-    options.num_threads = 4;
+    options.max_num_iterations = 1024;
+    options.num_threads = 1;
 
 
     ceres::Solve(options, &problem, &summary);

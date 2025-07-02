@@ -9,6 +9,9 @@ import numpy as np
 import pyceres
 from typing import List, Tuple
 from .rotation import rotation_matrix_to_angle_axis, angle_axis_to_rotation_matrix, so3_right_jacobian, skew_symmetric
+
+from pyceres_bind import ba_solve
+
 class CameraModel:
     def __init__(self,  K: np.ndarray):
         self.K = K
@@ -96,22 +99,11 @@ class BundleAdjuster:
         """
         Solve the bundle adjustment problem.
         """
-        problem, pose_params_dict, point_params_dict = self.define_problem(points_3d, observations, camera_poses, intrinsics)
-        summary = self.solve(problem)
-        
-        # Convert updated pose_params back to camera poses
-        optimized_camera_poses = {}
-
-        for timestamp, pose_param in pose_params_dict.items():
-            t = pose_param[:3]
-            w = pose_param[3:]
-            R = angle_axis_to_rotation_matrix(w)
-            pose = np.eye(4)
-            pose[:3, :3] = R
-            pose[:3, 3] = t
-            optimized_camera_poses[timestamp] = pose
-        
-        return summary, optimized_camera_poses, point_params_dict
+        #problem, pose_params_dict, point_params_dict = self.define_problem(points_3d, observations, camera_poses, intrinsics)
+        #summary = self.solve(problem)
+        print(f"use ba_solve")
+        optimized_camera_poses, optimized_points_3d = ba_solve(camera_poses, points_3d, observations, intrinsics)
+        return optimized_camera_poses, optimized_points_3d
     
     def define_problem(self, points_3d: dict[int, np.ndarray], 
                        observations: List[Tuple[int, int, np.ndarray]], 
@@ -213,48 +205,50 @@ class BundleAdjuster:
             len(camera_poses), len(points_3d.keys()), len(observations)))
         
         # Define problem
-        problem, pose_params, point_params = self.define_problem(points_3d, observations, camera_poses, intrinsics)
+        # problem, pose_params, point_params = self.define_problem(points_3d, observations, camera_poses, intrinsics)
         
         # Store initial values for comparison
-        initial_pose_params = {timestamp: pose_param.copy() for timestamp, pose_param in pose_params.items()}
-        initial_point_params = {timestamp: point_param.copy() for timestamp, point_param in point_params.items()}
+        # initial_pose_params = {timestamp: pose_param.copy() for timestamp, pose_param in pose_params.items()}
+        # initial_point_params = {timestamp: point_param.copy() for timestamp, point_param in point_params.items()}
         
         # Solve
-        summary = self.solve(problem)
+        # summary = self.solve(problem)
+        optimized_camera_poses, optimized_points_3d = self.solve_bundle_adjustment(points_3d, observations, camera_poses, intrinsics)
+        return optimized_camera_poses, optimized_points_3d
 
         # Check parameter changes
-        pose_changes = []
-        for timestamp, (init_pose, final_pose) in enumerate(zip(initial_pose_params, pose_params)):
-            change = np.linalg.norm(init_pose - final_pose)
-            pose_changes.append(change)
-            if timestamp < 3:  # Print first 3 poses
-                print(f"Pose {timestamp} change: {change:.6f}")
+        # pose_changes = []
+        # for timestamp, (init_pose, final_pose) in enumerate(zip(initial_pose_params, pose_params)):
+        #     change = np.linalg.norm(init_pose - final_pose)
+        #     pose_changes.append(change)
+        #     if timestamp < 3:  # Print first 3 poses
+        #         print(f"Pose {timestamp} change: {change:.6f}")
         
-        point_changes = []
-        for timestamp, (init_point, final_point) in enumerate(zip(initial_point_params, point_params)):
-            change = np.linalg.norm(init_point - final_point)
-            point_changes.append(change)
-            if timestamp < 5:  # Print first 5 points
-                print(f"Point {timestamp} change: {change:.6f}")
+        # point_changes = []
+        # for timestamp, (init_point, final_point) in enumerate(zip(initial_point_params, point_params)):
+        #     change = np.linalg.norm(init_point - final_point)
+        #     point_changes.append(change)
+        #     if timestamp < 5:  # Print first 5 points
+        #         print(f"Point {timestamp} change: {change:.6f}")
         
-        print(f"Max pose change: {max(pose_changes):.6f}")
-        print(f"Max point change: {max(point_changes):.6f}")
-        print(f"Mean pose change: {np.mean(pose_changes):.6f}")
-        print(f"Mean point change: {np.mean(point_changes):.6f}")
+        # print(f"Max pose change: {max(pose_changes):.6f}")
+        # print(f"Max point change: {max(point_changes):.6f}")
+        # print(f"Mean pose change: {np.mean(pose_changes):.6f}")
+        # print(f"Mean point change: {np.mean(point_changes):.6f}")
 
-        # Convert updated pose_params to camera poses
-        optimized_camera_poses = {}
-        for timestamp, pose_param in pose_params.items():
-            t = pose_param[:3]
-            w = pose_param[3:]
-            R = angle_axis_to_rotation_matrix(w)
-            # matrix 4x4
-            pose = np.eye(4)
-            pose[:3, :3] = R
-            pose[:3, 3] = t
-            optimized_camera_poses[timestamp] = pose
+        # # Convert updated pose_params to camera poses
+        # optimized_camera_poses = {}
+        # for timestamp, pose_param in pose_params.items():
+        #     t = pose_param[:3]
+        #     w = pose_param[3:]
+        #     R = angle_axis_to_rotation_matrix(w)
+        #     # matrix 4x4
+        #     pose = np.eye(4)
+        #     pose[:3, :3] = R
+        #     pose[:3, 3] = t
+        #     optimized_camera_poses[timestamp] = pose
         
-        # Convert point_params back to numpy array
-        optimized_points_3d = {timestamp: point_param for timestamp, point_param in point_params.items()}
+        # # Convert point_params back to numpy array
+        # optimized_points_3d = {timestamp: point_param for timestamp, point_param in point_params.items()}
         
-        return summary, optimized_camera_poses, optimized_points_3d
+        # return summary, optimized_camera_poses, optimized_points_3d

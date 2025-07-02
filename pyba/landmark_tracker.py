@@ -15,7 +15,7 @@ from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 from collections import defaultdict
 
-def triangulate_points_multiview(keypoints_list: List[np.ndarray], camera_poses: List[np.ndarray], K: np.ndarray) -> np.ndarray:
+def multiview_triangulation(keypoints_list: List[np.ndarray], camera_poses: List[np.ndarray], K: np.ndarray) -> Tuple[bool, np.ndarray]:
     """
     Triangulate 3D point from multiple views using DLT method.
     
@@ -28,7 +28,7 @@ def triangulate_points_multiview(keypoints_list: List[np.ndarray], camera_poses:
         point_3d: 3D point (3,)
     """
     if len(keypoints_list) < 2:
-        return np.zeros(3)
+        return False, np.zeros(3)
     
     # Build the DLT matrix
     A = []
@@ -52,8 +52,14 @@ def triangulate_points_multiview(keypoints_list: List[np.ndarray], camera_poses:
     
     # Convert to 3D coordinates
     point_3d = point_4d[:3] / point_4d[3]
-    
-    return point_3d
+
+    # depth in each camera should be positive
+    for pose in camera_poses:
+        pose_inv = np.linalg.inv(pose)
+        point_in_camera = pose_inv[:3, :3] @ point_3d + pose_inv[:3, 3]
+        if point_in_camera[2] <= 0.1:
+            return False, np.zeros(3)
+    return True, point_3d
 
 
 @dataclass
@@ -144,7 +150,7 @@ class LandmarkTracker:
         The observation matrix is used to solve the bundle adjustment problem.
         
         Returns:
-            relations: List of tuples (landmark_id, timestamp, keypoint)
+            relations: List of tuples (timestamp, landmark_id, keypoint)
         '''
         relations = []
         for landmark_id in self.landmarks:
@@ -152,7 +158,7 @@ class LandmarkTracker:
             if landmark.triangulated:
                 for timestamp, kp_idx in self.landmark_observations[landmark_id].items():
                     keypoint = self.landmark_keypoints[landmark_id][timestamp][kp_idx]
-                    relations.append((landmark_id, timestamp, keypoint))
+                    relations.append((timestamp, landmark_id, keypoint))
         return relations
 
     def get_landmark_point3ds(self) -> Dict[int, np.ndarray]:
