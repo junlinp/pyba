@@ -172,12 +172,12 @@ py::tuple ba_solve(
     for (const auto& [cam_idx, pt_idx, obs] : observations) {
         std::cout << "[ba_solve] cam_idx: " << cam_idx << std::endl;
         std::cout << "[ba_solve] pt_idx: " << pt_idx << std::endl;
-        std::array<double, 2> obs_parameter;
         auto obs_buf = obs.unchecked<1>();
-        obs_parameter[0] = obs_buf(0);
-        obs_parameter[1] = obs_buf(1);
-        Eigen::Vector2d observed_keypoint = Eigen::Map<const Eigen::Vector2d>(obs.data());
+        std::cout << "[ba_solve] unchecked" << std::endl;
+        Eigen::Vector2d observed_keypoint(obs_buf(0), obs_buf(1));
+        std::cout << "[ba_solve] new ReprojectionError" << std::endl;
         ceres::CostFunction* reprojection_error = new ReprojectionError(observed_keypoint, K_eigen);
+        std::cout << "[ba_solve] AddResidualBlock" << std::endl;
         if (camera_parameters.find(cam_idx) == camera_parameters.end()) {
             std::cout << "[ba_solve] camera_parameters.find(cam_idx) == camera_parameters.end()" << std::endl;
             std::cout << "[ba_solve] cam_idx: " << cam_idx << std::endl;
