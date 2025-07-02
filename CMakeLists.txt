@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.18)
 project(pyba LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 
+if(DEFINED ENV{CONDA_PREFIX})
+    list(APPEND CMAKE_PREFIX_PATH $ENV{CONDA_PREFIX})
+endif()
+
 find_package(pybind11 REQUIRED)
 # Use the fetched Eigen and Ceres
 set(Eigen3_DIR "$ENV{CONDA_PREFIX}/share/eigen3/cmake")
