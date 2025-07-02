@@ -186,12 +186,14 @@ py::tuple ba_solve(
 
     CameraPoses optimized_camera_poses;
     for (const auto& [cam_idx, cam_parameter] : camera_parameters) {
-        Eigen::Matrix<double, 4, 4, Eigen::RowMajor> cam_pose_eigen;
-        Eigen::Matrix<double, 3, 3> R;
-        ceres::AngleAxisToRotationMatrix(cam_parameter.data() + 3, R.data());
-        cam_pose_eigen.block<3, 3>(0, 0) = R;
-        cam_pose_eigen.block<3, 1>(0, 3) = Eigen::Map<const Eigen::Vector3d>(cam_parameter.data());
-        optimized_camera_poses[cam_idx] = py::array_t<double>({4, 4}, cam_pose_eigen.data());
+      Eigen::Matrix<double, 4, 4, Eigen::RowMajor> cam_pose_eigen = Eigen::Matrix<double, 4, 4, Eigen::RowMajor>::Identity();
+      Eigen::Matrix<double, 3, 3> R;
+      ceres::AngleAxisToRotationMatrix(cam_parameter.data() + 3, R.data());
+      cam_pose_eigen.block<3, 3>(0, 0) = R;
+      cam_pose_eigen.block<3, 1>(0, 3) =
+          Eigen::Map<const Eigen::Vector3d>(cam_parameter.data());
+      optimized_camera_poses[cam_idx] =
+          py::array_t<double>({4, 4}, cam_pose_eigen.data());
     }
 
     Point3Ds optimized_point_3ds;
