@@ -147,12 +147,14 @@ py::tuple ba_solve(
 
     std::map<int64_t, std::array<double, 3>> point_parameters;
     for (const auto& [pt_idx, pt_3d] : point_3ds) {
+        std::cout << "[ba_solve] pt_idx: " << pt_idx << std::endl;
         auto pt_3d_buf = pt_3d.unchecked<1>();
         std::array<double, 3> point_parameter;
         point_parameter[0] = pt_3d_buf(0);
         point_parameter[1] = pt_3d_buf(1);
         point_parameter[2] = pt_3d_buf(2);
         point_parameters[pt_idx] = point_parameter;
+        std::cout << "[ba_solve] pt_idx: " << pt_idx << " point_parameter: " << point_parameter[0] << " " << point_parameter[1] << " " << point_parameter[2] << std::endl;
         // std::cout << "point_parameter: " << point_parameter[0] << " " << point_parameter[1] << " " << point_parameter[2] << std::endl;
     }
 
