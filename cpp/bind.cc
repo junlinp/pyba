@@ -1,3 +1,4 @@
+#include <limits>
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
@@ -122,6 +123,7 @@ py::tuple ba_solve(
 
     std::map<int64_t, std::array<double, 6>> camera_parameters;
 
+    int64_t min_cam_indx = std::numeric_limits<int64_t>::max();
     for (const auto& [cam_idx, cam_pose] : camera_poses) {
         std::array<double, 6> camera_parameter;
         auto cam_pose_buf = cam_pose.unchecked<2>();
@@ -189,7 +191,10 @@ py::tuple ba_solve(
         problem.AddResidualBlock(reprojection_error, loss_function, camera_parameters.at(cam_idx).data(), point_parameters.at(pt_idx).data());
     }
 
-    problem.SetParameterBlockConstant(camera_parameters.at(0).data());
+    
+    if (min_cam_indx != std::numeric_limits<int64_t>::max()) {
+        problem.SetParameterBlockConstant(camera_parameters.at(min_cam_indx).data());
+    }
 
     options.linear_solver_type = ceres::DENSE_SCHUR;
     options.minimizer_progress_to_stdout = true;
