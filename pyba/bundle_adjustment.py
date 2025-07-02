@@ -7,10 +7,10 @@ This module provides bundle adjustment functionality using pyceres for optimizat
 
 import numpy as np
 import pyceres
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from .rotation import rotation_matrix_to_angle_axis, angle_axis_to_rotation_matrix, so3_right_jacobian, skew_symmetric
 
-from pyceres_bind import ba_solve
+from .pyceres_bind import ba_solve
 
 class CameraModel:
     def __init__(self,  K: np.ndarray):
@@ -92,9 +92,9 @@ class BundleAdjuster:
         self.fix_first_pose = fix_first_pose
         self.fix_intrinsics = fix_intrinsics
     
-    def solve_bundle_adjustment(self, points_3d: dict[int, np.ndarray], 
+    def solve_bundle_adjustment(self, points_3d: Dict[int, np.ndarray], 
                                 observations: List[Tuple[int, int, np.ndarray]], 
-                                camera_poses: dict[int, np.ndarray], 
+                                camera_poses: Dict[int, np.ndarray], 
                                 intrinsics: np.ndarray):
         """
         Solve the bundle adjustment problem.
@@ -105,9 +105,9 @@ class BundleAdjuster:
         optimized_camera_poses, optimized_points_3d = ba_solve(camera_poses, points_3d, observations, intrinsics)
         return optimized_camera_poses, optimized_points_3d
     
-    def define_problem(self, points_3d: dict[int, np.ndarray], 
+    def define_problem(self, points_3d: Dict[int, np.ndarray], 
                        observations: List[Tuple[int, int, np.ndarray]], 
-                       camera_poses: dict[int, np.ndarray], 
+                       camera_poses: Dict[int, np.ndarray], 
                        intrinsics: np.ndarray):
         """
         Define the bundle adjustment problem.
@@ -185,9 +185,9 @@ class BundleAdjuster:
         print(summary.FullReport())
         return summary
     
-    def run(self, points_3d: dict[int, np.ndarray], 
+    def run(self, points_3d: Dict[int, np.ndarray], 
             observations: List[Tuple[int, int, np.ndarray]], 
-            camera_poses: dict[int, np.ndarray], 
+            camera_poses: Dict[int, np.ndarray], 
             intrinsics: np.ndarray):
         """
         Run bundle adjustment.

@@ -172,4 +172,5 @@ exclude_lines = [
 minimum-version = "0.8"
 build-dir = "build"
 wheel.packages = ["pyba"]
-cmake.verbose = true 
+cmake.verbose = true
+cmake.define.CMAKE_BUILD_TYPE = "Release" 
