@@ -176,12 +176,10 @@ py::tuple ba_solve(
         if (camera_parameters.find(cam_idx) == camera_parameters.end()) {
             std::cout << "[ba_solve] camera_parameters.find(cam_idx) == camera_parameters.end()" << std::endl;
             std::cout << "[ba_solve] cam_idx: " << cam_idx << std::endl;
-            std::cout << "[ba_solve] obs: " << obs.transpose() << std::endl;
         }
         if (point_parameters.find(pt_idx) == point_parameters.end()) {
             std::cout << "[ba_solve] point_parameters.find(pt_idx) == point_parameters.end()" << std::endl;
             std::cout << "[ba_solve] pt_idx: " << pt_idx << std::endl;
-            std::cout << "[ba_solve] obs: " << obs.transpose() << std::endl;
         }
         problem.AddResidualBlock(reprojection_error, loss_function, camera_parameters.at(cam_idx).data(), point_parameters.at(pt_idx).data());
     }
