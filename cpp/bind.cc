@@ -26,11 +26,20 @@ Eigen::Matrix3d skew(Eigen::Vector3d v) {
 }
 
 Eigen::Matrix3d right_jacobian_rotation(Eigen::Matrix<double, 3, 1> v) {
-    Eigen::Matrix3d skew_matrix = skew(v);
+    double theta = v.norm();
     Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
-    return I + 0.5 * skew_matrix + (1.0 / 6.0) * skew_matrix * skew_matrix;
-}
+    Eigen::Matrix3d skew_matrix = skew(v);
 
+    if (theta < 1e-5) {
+        return I - 0.5 * skew_matrix + (1.0 / 6.0) * skew_matrix * skew_matrix;
+    } else {
+        double theta2 = theta * theta;
+        double theta3 = theta * theta2;
+        double A = (1 - std::cos(theta)) / theta2;
+        double B = (theta - std::sin(theta)) / theta3;
+        return I - A * skew_matrix + B * skew_matrix * skew_matrix;
+    }
+}
 
 class ReprojectionError : public ceres::SizedCostFunction<2, 6, 3> {
 public:
