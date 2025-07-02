@@ -111,6 +111,10 @@ py::tuple ba_solve(
     Observations observations,
     py::array_t<double> K
 ) {
+    std::cout << "[ba_solve] start" << std::endl;
+    std::cout << "[ba_solve] camera_poses: " << camera_poses.size() << std::endl;
+    std::cout << "[ba_solve] point_3ds: " << point_3ds.size() << std::endl;
+    std::cout << "[ba_solve] observations: " << observations.size() << std::endl;
 
     ceres::Problem problem;
     ceres::Solver::Options options;
@@ -169,6 +173,16 @@ py::tuple ba_solve(
         obs_parameter[1] = obs_buf(1);
         Eigen::Vector2d observed_keypoint = Eigen::Map<const Eigen::Vector2d>(obs.data());
         ceres::CostFunction* reprojection_error = new ReprojectionError(observed_keypoint, K_eigen);
+        if (camera_parameters.find(cam_idx) == camera_parameters.end()) {
+            std::cout << "[ba_solve] camera_parameters.find(cam_idx) == camera_parameters.end()" << std::endl;
+            std::cout << "[ba_solve] cam_idx: " << cam_idx << std::endl;
+            std::cout << "[ba_solve] obs: " << obs.transpose() << std::endl;
+        }
+        if (point_parameters.find(pt_idx) == point_parameters.end()) {
+            std::cout << "[ba_solve] point_parameters.find(pt_idx) == point_parameters.end()" << std::endl;
+            std::cout << "[ba_solve] pt_idx: " << pt_idx << std::endl;
+            std::cout << "[ba_solve] obs: " << obs.transpose() << std::endl;
+        }
         problem.AddResidualBlock(reprojection_error, loss_function, camera_parameters.at(cam_idx).data(), point_parameters.at(pt_idx).data());
     }
 
