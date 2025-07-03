@@ -26,10 +26,10 @@ import cv2
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
-from .kitti_reader import KITTIOdometryReader
-from .landmark_tracker import LandmarkTracker, multiview_triangulation
-from .bundle_adjustment import BundleAdjuster
-from .rotation import angle_axis_to_rotation_matrix
+from pyba.kitti_reader import KITTIOdometryReader
+from pyba.landmark_tracker import LandmarkTracker, multiview_triangulation
+from pyba.bundle_adjustment import BundleAdjuster
+from pyba.rotation import angle_axis_to_rotation_matrix
 
 # Import LightGlue (includes SuperPoint)
 try:
@@ -332,7 +332,7 @@ def main():
 
     FRAME_STEP = 10
     # Select a few frames for demo (limit to first 10 frames for quick testing)
-    # num_frames = min(FRAME_STEP * 15, len(gt_poses))
+    # num_frames = min(FRAME_STEP * 20, len(gt_poses))
     num_frames = len(gt_poses)
 
     print(f"Processing {num_frames} frames for demo")
@@ -352,6 +352,8 @@ def main():
     camera_poses = {}
     images = {}
 
+    relative_pose_constraints = []
+
     for frame_id in range(FRAME_STEP, num_frames, FRAME_STEP):
         prev_frame_timestamp = timestamps[frame_id - FRAME_STEP]
         frame_timestamp = timestamps[frame_id]
@@ -360,6 +362,9 @@ def main():
         camera_poses[frame_timestamp] = gt_poses[frame_id]
         images[prev_frame_timestamp] = reader.load_image(seq, frame_id - FRAME_STEP, 'left')
         images[frame_timestamp] = reader.load_image(seq, frame_id, 'left')
+
+
+        relative_pose_constraints.append((prev_frame_timestamp, frame_timestamp, np.linalg.inv(gt_poses[frame_id]) @ gt_poses[frame_id - FRAME_STEP], np.array([100, 100, 100]), np.array([100, 100, 100])))
 
         print(f"\nProcessing frame {frame_id}...")
         
@@ -455,7 +460,7 @@ def main():
     
     print(f"Added noise to initial poses for testing optimization")
     
-    optimized_camera_poses, optimized_points_3d = ba.run(points_3d, observations, noisy_poses, K)
+    optimized_camera_poses, optimized_points_3d = ba.run(points_3d, observations, noisy_poses, K, None, relative_pose_constraints)
     # optimized_camera_poses is a dict of timestamp to 4x4 pose matrix
     # sort the optimized_camera_poses by timestamp
     optimized_camera_poses = dict(sorted(optimized_camera_poses.items()))
@@ -491,11 +496,11 @@ def main():
     # draw ground truth trajectory x-z plane with green, and draw optimized trajectory x-z plane with red in the same figure
     plt.figure(figsize=(10, 10))
 
-    for timestamp, poses in optimized_camera_poses.items():
-        print(f"timestamp: {timestamp}, optimized_camera_poses[timestamp]: {poses}")
+    # for timestamp, poses in optimized_camera_poses.items():
+        # print(f"timestamp: {timestamp}, optimized_camera_poses[timestamp]: {poses}")
     optimized_trajectory = np.array([optimized_camera_poses[timestamp][:3, 3] for timestamp in optimized_camera_poses.keys()])
     print(f"optimized_trajectory shape: {optimized_trajectory.shape}")
-    print(f"optimized_trajectory: {optimized_trajectory}")
+    # print(f"optimized_trajectory: {optimized_trajectory}")
     plt.plot(trajectory[:, 0], trajectory[:, 2], color='green', label='Ground Truth Trajectory')
     plt.plot(optimized_trajectory[:, 0], optimized_trajectory[:, 2], color='red', label='Optimized Trajectory')
     plt.xlabel('X')
@@ -505,7 +510,7 @@ def main():
     plt.show()
 
 
-    print(f"Optimized camera poses: {len(optimized_camera_poses)}")
+    # print(f"Optimized camera poses: {len(optimized_camera_poses)}")
     # output the optimized points 3d to a ply file
     save_pointcloud_ply(optimized_points_3d, {landmark_id: np.ones(3) for landmark_id in optimized_points_3d}, "optimized_points_3d.ply")
 

@@ -8,9 +8,9 @@ This module provides bundle adjustment functionality using pyceres for optimizat
 import numpy as np
 import pyceres
 from typing import List, Tuple, Dict
-from .rotation import rotation_matrix_to_angle_axis, angle_axis_to_rotation_matrix, so3_right_jacobian, skew_symmetric
+from pyba.rotation import rotation_matrix_to_angle_axis, angle_axis_to_rotation_matrix, so3_right_jacobian, skew_symmetric
 
-from .pyceres_bind import ba_solve
+from pyba.pyceres_bind import ba_solve
 
 class CameraModel:
     def __init__(self,  K: np.ndarray):
@@ -95,68 +95,31 @@ class BundleAdjuster:
     def solve_bundle_adjustment(self, points_3d: Dict[int, np.ndarray], 
                                 observations: List[Tuple[int, int, np.ndarray]], 
                                 camera_poses: Dict[int, np.ndarray], 
-                                intrinsics: np.ndarray):
+                                intrinsics: np.ndarray,
+                                constant_pose_index: Dict[int, bool] = None,
+                                relative_pose_constraints: List[Tuple[int, int, np.ndarray, np.ndarray, np.ndarray]] = None):
         """
         Solve the bundle adjustment problem.
         """
         #problem, pose_params_dict, point_params_dict = self.define_problem(points_3d, observations, camera_poses, intrinsics)
         #summary = self.solve(problem)
         print(f"use ba_solve")
-        optimized_camera_poses, optimized_points_3d = ba_solve(camera_poses, points_3d, observations, intrinsics)
+
+        if constant_pose_index is not None:
+            py_constant_pose_index = {timestamp: is_constant for timestamp, is_constant in constant_pose_index.items()}
+        else:
+            py_constant_pose_index = {}
+
+        if relative_pose_constraints is not None:
+            py_relative_pose_constraints = []
+            for cam_idx_i, cam_idx_j, relative_pose_j_i, translation_weight, rotation_weight in relative_pose_constraints:
+                py_relative_pose_constraints.append((cam_idx_i, cam_idx_j, relative_pose_j_i, translation_weight, rotation_weight))
+        else:
+            py_relative_pose_constraints = []
+
+        optimized_camera_poses, optimized_points_3d = ba_solve(camera_poses, points_3d, observations, intrinsics, py_constant_pose_index, py_relative_pose_constraints)
         return optimized_camera_poses, optimized_points_3d
     
-    def define_problem(self, points_3d: Dict[int, np.ndarray], 
-                       observations: List[Tuple[int, int, np.ndarray]], 
-                       camera_poses: Dict[int, np.ndarray], 
-                       intrinsics: np.ndarray):
-        """
-        Define the bundle adjustment problem.
-        
-        Args:
-            rec: Dictionary containing reconstruction data
-            
-        Returns:
-            pyceres.Problem object
-        """
-        prob = pyceres.Problem()
-        loss = pyceres.HuberLoss(2.0)
-        
-        # Extract data
-        # Create camera model
-        camera_model = CameraModel(intrinsics)
-        
-        # Convert camera poses to parameter format [t_x, t_y, t_z, w_x, w_y, w_z]
-        pose_params = {}
-        for timestamp, pose in camera_poses.items():
-            t = pose[:3, 3]  # translation
-            R = pose[:3, :3]  # rotation matrix
-            # Convert rotation matrix to quaternion, then to angle-axis
-            w = rotation_matrix_to_angle_axis(R)  # angle-axis representation
-            pose_param = np.concatenate([t, w]).astype(np.float64)
-            pose_params[timestamp] = pose_param
-        
-        # Store 3D points as parameter blocks (one array per point)
-        point_params = {landmark_id: pt.astype(np.float64) for landmark_id, pt in points_3d.items()}
-        
-        # Add residual blocks for each observation
-        for landmark_id, timestamp, point_2d in observations:
-            cost = ReprojErrorCost(point_2d, camera_model)
-            pose_param = pose_params[timestamp]  # always the same object
-            point_param = point_params[landmark_id]  # always the same object
-            prob.add_residual_block(cost, loss, [pose_param, point_param])
-        
-        # Fix first pose if requested
-        if self.fix_first_pose and len(pose_params) > 0:
-            first_timestamp = np.min(np.array(list(pose_params.keys())))
-            prob.set_parameter_block_constant(pose_params[first_timestamp])
-        
-        # Fix camera intrinsics if requested
-        if self.fix_intrinsics:
-            # Note: intrinsics are not currently parameterized in this setup
-            pass
-        
-        print(f"Created problem with {len(observations)} observations")
-        return prob, pose_params, point_params
     
     def solve(self, prob: pyceres.Problem):
         """
@@ -188,7 +151,9 @@ class BundleAdjuster:
     def run(self, points_3d: Dict[int, np.ndarray], 
             observations: List[Tuple[int, int, np.ndarray]], 
             camera_poses: Dict[int, np.ndarray], 
-            intrinsics: np.ndarray):
+            intrinsics: np.ndarray,
+            constant_pose_index: Dict[int, bool] = None,
+            relative_pose_constraints: List[Tuple[int, int, np.ndarray, np.ndarray, np.ndarray]] = None):
         """
         Run bundle adjustment.
         
@@ -203,52 +168,18 @@ class BundleAdjuster:
         """
         print("Bundle adjustment: {} cameras, {} points, {} observations".format(
             len(camera_poses), len(points_3d.keys()), len(observations)))
+
+        constant_pose_index_dict = {}
+        if constant_pose_index is not None:
+            for timestamp, index in constant_pose_index.items():
+                constant_pose_index_dict[timestamp] = index
+
+        if self.fix_first_pose:
+            min_timestamp = min(camera_poses.keys())
+            constant_pose_index_dict[min_timestamp] = True
+
         
-        # Define problem
-        # problem, pose_params, point_params = self.define_problem(points_3d, observations, camera_poses, intrinsics)
-        
-        # Store initial values for comparison
-        # initial_pose_params = {timestamp: pose_param.copy() for timestamp, pose_param in pose_params.items()}
-        # initial_point_params = {timestamp: point_param.copy() for timestamp, point_param in point_params.items()}
-        
-        # Solve
-        # summary = self.solve(problem)
-        optimized_camera_poses, optimized_points_3d = self.solve_bundle_adjustment(points_3d, observations, camera_poses, intrinsics)
+        optimized_camera_poses, optimized_points_3d = self.solve_bundle_adjustment(points_3d, observations, camera_poses, intrinsics, constant_pose_index_dict, relative_pose_constraints)
         return optimized_camera_poses, optimized_points_3d
 
-        # Check parameter changes
-        # pose_changes = []
-        # for timestamp, (init_pose, final_pose) in enumerate(zip(initial_pose_params, pose_params)):
-        #     change = np.linalg.norm(init_pose - final_pose)
-        #     pose_changes.append(change)
-        #     if timestamp < 3:  # Print first 3 poses
-        #         print(f"Pose {timestamp} change: {change:.6f}")
-        
-        # point_changes = []
-        # for timestamp, (init_point, final_point) in enumerate(zip(initial_point_params, point_params)):
-        #     change = np.linalg.norm(init_point - final_point)
-        #     point_changes.append(change)
-        #     if timestamp < 5:  # Print first 5 points
-        #         print(f"Point {timestamp} change: {change:.6f}")
-        
-        # print(f"Max pose change: {max(pose_changes):.6f}")
-        # print(f"Max point change: {max(point_changes):.6f}")
-        # print(f"Mean pose change: {np.mean(pose_changes):.6f}")
-        # print(f"Mean point change: {np.mean(point_changes):.6f}")
-
-        # # Convert updated pose_params to camera poses
-        # optimized_camera_poses = {}
-        # for timestamp, pose_param in pose_params.items():
-        #     t = pose_param[:3]
-        #     w = pose_param[3:]
-        #     R = angle_axis_to_rotation_matrix(w)
-        #     # matrix 4x4
-        #     pose = np.eye(4)
-        #     pose[:3, :3] = R
-        #     pose[:3, 3] = t
-        #     optimized_camera_poses[timestamp] = pose
-        
-        # # Convert point_params back to numpy array
-        # optimized_points_3d = {timestamp: point_param for timestamp, point_param in point_params.items()}
-        
-        # return summary, optimized_camera_poses, optimized_points_3d
+       

@@ -17,6 +17,10 @@ using Point3Ds = std::unordered_map<int64_t, py::array_t<double>>;    // 3x1
 using Observation = std::tuple<int64_t, int64_t, py::array_t<double>>;     // (cam_idx, pt_idx, 2x1)
 using Observations = std::vector<Observation>;
 
+using ConstantPoseIndex = std::unordered_map<int64_t, bool>;
+// (cam_idx_i, cam_idx_j, relative_pose_j_i, translation_weight, rotation_weight)
+using RelativePoseConstraints = std::vector<std::tuple<int64_t, int64_t, py::array_t<double>, py::array_t<double>, py::array_t<double>>>;
+
 Eigen::Matrix3d skew(Eigen::Vector3d v) {
     Eigen::Matrix3d skew_matrix;
     skew_matrix << 0, -v[2], v[1],
@@ -114,12 +118,85 @@ public:
     Eigen::Matrix3d K_;
 };
 
+class RelativePoseError : public ceres::SizedCostFunction<6, 6, 6> {
+public:
+    RelativePoseError(const Eigen::Matrix4d& relative_pose, Eigen::Vector3d translation_weight, Eigen::Vector3d rotation_weight)
+        : relative_j_i_translation_(Eigen::Vector3d::Zero()), relative_j_i_rotation_lie_algebra_(Eigen::Vector3d::Zero()), translation_weight_(translation_weight), rotation_weight_(rotation_weight) {
+            relative_j_i_translation_ = relative_pose.block<3, 1>(0, 3);
+            Eigen::Matrix<double, 3, 3> relative_j_i_rotation = relative_pose.block<3, 3>(0, 0);
+            ceres::RotationMatrixToAngleAxis(relative_j_i_rotation.data(), relative_j_i_rotation_lie_algebra_.data());
+        }
+
+    bool Evaluate(double const* const* parameters, double* residuals, double** jacobians) const override {
+        Eigen::Map<const Eigen::Matrix<double, 6, 1>> camera_i(parameters[0]);
+        Eigen::Map<const Eigen::Matrix<double, 6, 1>> camera_j(parameters[1]);
+
+        Eigen::Matrix<double, 3, 1> translation_i = Eigen::Map<const Eigen::Matrix<double, 3, 1>>(camera_i.data());
+        Eigen::Matrix<double, 3, 1> rotation_i = Eigen::Map<const Eigen::Matrix<double, 3, 1>>(camera_i.data() + 3);
+
+        Eigen::Matrix<double, 3, 1> translation_j = Eigen::Map<const Eigen::Matrix<double, 3, 1>>(camera_j.data());
+        Eigen::Matrix<double, 3, 1> rotation_j = Eigen::Map<const Eigen::Matrix<double, 3, 1>>(camera_j.data() + 3);
+
+        Eigen::Matrix<double, 3, 3> R_i;
+        ceres::AngleAxisToRotationMatrix(rotation_i.data(), R_i.data());
+        Eigen::Matrix<double, 3, 3> R_j;
+        ceres::AngleAxisToRotationMatrix(rotation_j.data(), R_j.data());
+
+        Eigen::Matrix<double, 3, 3> relative_j_i_rotation;
+        ceres::AngleAxisToRotationMatrix(relative_j_i_rotation_lie_algebra_.data(), relative_j_i_rotation.data());
+        Eigen::Matrix<double, 3, 3> rotation_loss = relative_j_i_rotation * R_i.transpose() * R_j;
+        ceres::RotationMatrixToAngleAxis(rotation_loss.data(), residuals + 3);
+        Eigen::Map<Eigen::Vector3d> rotation_residuals_map(residuals + 3);
+        rotation_residuals_map = rotation_weight_.asDiagonal() * rotation_residuals_map;
+        Eigen::Vector3d translation_loss = relative_j_i_rotation * R_i.transpose() * (translation_j - translation_i) + relative_j_i_translation_;
+        Eigen::Map<Eigen::Vector3d> residuals_map(residuals);
+        residuals_map = translation_weight_.asDiagonal() * translation_loss;
+
+        if (jacobians != nullptr) {
+            Eigen::Matrix<double, 6, 6> J_camera_i;
+            J_camera_i.setZero();
+
+            J_camera_i.block<3, 3>(0, 0) =
+                translation_weight_.asDiagonal() * -relative_j_i_rotation * R_i.transpose();
+            J_camera_i.block<3, 3>(3, 3) = 
+            translation_weight_.asDiagonal() *
+            relative_j_i_rotation *
+                                           R_i.transpose() *
+                                           skew(translation_j - translation_i) *
+                                           right_jacobian_rotation(-rotation_i);
+            J_camera_i.block<3, 3>(3, 0) = Eigen::Matrix3d::Zero();
+            J_camera_i.block<3, 3>(3, 3) =
+                rotation_weight_.asDiagonal() * -R_j.transpose() * right_jacobian_rotation(-rotation_i);
+
+            Eigen::Matrix<double, 6, 6> J_camera_j;
+            J_camera_j.setZero();
+            J_camera_j.block<3, 3>(0, 0) = translation_weight_.asDiagonal() * relative_j_i_rotation * R_i.transpose();
+            J_camera_j.block<3, 3>(0, 3) = Eigen::Matrix3d::Zero();
+            J_camera_j.block<3, 3>(3, 0) = Eigen::Matrix3d::Zero();
+            J_camera_j.block<3, 3>(3, 3) = rotation_weight_.asDiagonal() * right_jacobian_rotation(rotation_j);
+            if (jacobians[0] != nullptr) {
+                Eigen::Map<Eigen::Matrix<double, 6, 6, Eigen::RowMajor>>(jacobians[0]).noalias() = J_camera_i;
+            }
+            if (jacobians[1] != nullptr) {
+                Eigen::Map<Eigen::Matrix<double, 6, 6, Eigen::RowMajor>>(jacobians[1]).noalias() = J_camera_j;
+            }
+        }
+        return true;
+    }
+    Eigen::Vector3d relative_j_i_translation_;
+    Eigen::Vector3d relative_j_i_rotation_lie_algebra_;
+    Eigen::Vector3d translation_weight_;
+    Eigen::Vector3d rotation_weight_;
+};
+
 // This is a stub. You will fill in the Ceres logic.
 py::tuple ba_solve(
     CameraPoses camera_poses,
     Point3Ds point_3ds,
     Observations observations,
-    py::array_t<double> K
+    py::array_t<double> K,
+    ConstantPoseIndex constant_pose_index,
+    RelativePoseConstraints relative_pose_constraints
 ) {
     ceres::Problem problem;
     ceres::Solver::Options options;
@@ -171,9 +248,30 @@ py::tuple ba_solve(
         problem.AddResidualBlock(reprojection_error, loss_function, camera_parameters.at(cam_idx).data(), point_parameters.at(pt_idx).data());
     }
 
-    
-    if (min_cam_indx != std::numeric_limits<int64_t>::max()) {
-        problem.SetParameterBlockConstant(camera_parameters.at(min_cam_indx).data());
+    // constant_pose_index maybe None
+    for (const auto& [cam_idx, is_constant] : constant_pose_index) {
+        if (is_constant) {
+            std::cout << "set camera " << cam_idx << " to constant" << std::endl;
+            problem.SetParameterBlockConstant(camera_parameters.at(cam_idx).data());
+        }
+    }
+
+    for (const auto& [cam_idx_i, cam_idx_j, relative_pose_j_i, translation_weight, rotation_weight] : relative_pose_constraints) {
+        auto relative_pose_j_i_buf = relative_pose_j_i.unchecked<2>();
+        Eigen::Matrix4d relative_pose_j_i_eigen;
+        for (ssize_t i = 0; i < 4; ++i)
+            for (ssize_t j = 0; j < 4; ++j)
+                relative_pose_j_i_eigen(i, j) = relative_pose_j_i_buf(i, j);
+        auto translation_weight_buf = translation_weight.unchecked<1>();
+        Eigen::Vector3d translation_weight_eigen;
+        for (ssize_t i = 0; i < 3; ++i)
+            translation_weight_eigen[i] = translation_weight_buf(i);
+        auto rotation_weight_buf = rotation_weight.unchecked<1>();
+        Eigen::Vector3d rotation_weight_eigen;
+        for (ssize_t i = 0; i < 3; ++i)
+            rotation_weight_eigen[i] = rotation_weight_buf(i);
+        ceres::CostFunction* relative_pose_error = new RelativePoseError(relative_pose_j_i_eigen, translation_weight_eigen, rotation_weight_eigen);
+        problem.AddResidualBlock(relative_pose_error, nullptr, camera_parameters.at(cam_idx_i).data(), camera_parameters.at(cam_idx_j).data());
     }
 
     options.linear_solver_type = ceres::DENSE_SCHUR;
@@ -209,6 +307,53 @@ py::tuple ba_solve(
     return py::make_tuple(optimized_camera_poses, py_optimized_point_3ds);
 }
 
+
+py::array_t<double> test_relative_pose_error(py::array_t<double> relative_pose, py::array_t<double> translation_weight, py::array_t<double> rotation_weight) {
+    std::cout << "test_relative_pose_error" << std::endl;
+    auto relative_pose_buf = relative_pose.unchecked<2>();
+    Eigen::Matrix4d relative_pose_eigen;
+    for (ssize_t i = 0; i < 4; ++i)
+        for (ssize_t j = 0; j < 4; ++j)
+            relative_pose_eigen(i, j) = relative_pose_buf(i, j);
+    std::cout << "relative_pose_eigen: " << relative_pose_eigen << std::endl;
+
+    auto translation_weight_buf = translation_weight.unchecked<1>();
+    auto rotation_weight_buf = rotation_weight.unchecked<1>();
+    Eigen::Vector3d translation_weight_eigen;
+    Eigen::Vector3d rotation_weight_eigen;
+    for (ssize_t i = 0; i < 3; ++i) {
+        translation_weight_eigen[i] = translation_weight_buf(i);
+        rotation_weight_eigen[i] = rotation_weight_buf(i);
+    }
+
+    std::array<double, 6> camera_i = {0, 0, 0, 0, 0, 0};
+    std::array<double, 6> camera_j = {0, 0, 0, 0, 0, 0};
+
+    ceres::Problem problem;
+    ceres::Solver::Options options;
+    ceres::Solver::Summary summary;
+    ceres::CostFunction* relative_pose_error = new RelativePoseError(relative_pose_eigen, translation_weight_eigen, rotation_weight_eigen);
+    problem.AddResidualBlock(relative_pose_error, nullptr, camera_i.data(), camera_j.data());
+    problem.SetParameterBlockConstant(camera_i.data());
+    ceres::Solve(options, &problem, &summary);
+    std::cout << summary.FullReport() << std::endl;
+
+
+    Eigen::Matrix<double, 3, 3> rotation_j;
+    ceres::AngleAxisToRotationMatrix(camera_j.data() + 3, rotation_j.data());
+    Eigen::Vector3d translation_j = Eigen::Map<const Eigen::Vector3d>(camera_j.data());
+
+    Eigen::Matrix<double, 4, 4, Eigen::RowMajor> relative_pose_eigen_optimized;
+    relative_pose_eigen_optimized.block<3, 3>(0, 0) = rotation_j;
+    relative_pose_eigen_optimized.block<3, 1>(0, 3) = translation_j;
+    relative_pose_eigen_optimized(3, 3) = 1;
+    // std::cout << "relative_pose_eigen_optimized: " << relative_pose_eigen_optimized << std::endl;
+
+    py::array_t<double> relative_pose_eigen_optimized_py = py::array_t<double>({4, 4}, relative_pose_eigen_optimized.data());
+    return relative_pose_eigen_optimized_py;
+
+}
+
 PYBIND11_MODULE(pyceres_bind, m) {
     m.doc() = "pybind11 binding for Ceres Solver (template)";
 
@@ -219,6 +364,8 @@ PYBIND11_MODULE(pyceres_bind, m) {
         py::arg("point_3ds"),
         py::arg("observations"),
         py::arg("K"),
+        py::arg("constant_pose_index"),
+        py::arg("relative_pose_constraints"),
         R"pbdoc(
             Bundle adjustment solve function.
 
@@ -240,4 +387,6 @@ PYBIND11_MODULE(pyceres_bind, m) {
 
     // TODO: Expose your Ceres classes/functions here
     // m.def("solve_bundle_adjustment", &solve_bundle_adjustment, ...);
+
+    m.def("test_relative_pose_error", &test_relative_pose_error, py::arg("relative_pose"), py::arg("translation_weight"), py::arg("rotation_weight"));
 } 
