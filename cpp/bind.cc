@@ -248,13 +248,6 @@ py::tuple ba_solve(
         problem.AddResidualBlock(reprojection_error, loss_function, camera_parameters.at(cam_idx).data(), point_parameters.at(pt_idx).data());
     }
 
-    // constant_pose_index maybe None
-    for (const auto& [cam_idx, is_constant] : constant_pose_index) {
-        if (is_constant) {
-            std::cout << "set camera " << cam_idx << " to constant" << std::endl;
-            problem.SetParameterBlockConstant(camera_parameters.at(cam_idx).data());
-        }
-    }
 
     for (const auto& [cam_idx_i, cam_idx_j, relative_pose_j_i, translation_weight, rotation_weight] : relative_pose_constraints) {
         auto relative_pose_j_i_buf = relative_pose_j_i.unchecked<2>();
@@ -272,6 +265,17 @@ py::tuple ba_solve(
             rotation_weight_eigen[i] = rotation_weight_buf(i);
         ceres::CostFunction* relative_pose_error = new RelativePoseError(relative_pose_j_i_eigen, translation_weight_eigen, rotation_weight_eigen);
         problem.AddResidualBlock(relative_pose_error, nullptr, camera_parameters.at(cam_idx_i).data(), camera_parameters.at(cam_idx_j).data());
+    }
+
+    // constant_pose_index maybe None
+    for (const auto& [cam_idx, is_constant] : constant_pose_index) {
+        if (is_constant) {
+            std::cout << "set camera " << cam_idx << " to constant" << std::endl;
+            if (!problem.HasParameterBlock(camera_parameters.at(cam_idx).data())) {
+                problem.AddParameterBlock(camera_parameters.at(cam_idx).data(), 6);
+            }
+            problem.SetParameterBlockConstant(camera_parameters.at(cam_idx).data());
+        }
     }
 
     options.linear_solver_type = ceres::DENSE_SCHUR;
