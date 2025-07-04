@@ -198,21 +198,37 @@ class LandmarkTracker:
         obs_to = self.landmark_observations.get(new_landmark_id, {})
         merged_obs = obs_to.copy()
         merged_obs.update(obs_from)
+
         self.landmark_observations[new_landmark_id] = merged_obs
         del self.landmark_observations[landmark_id]
 
+        #
         # Update frame_landmarks to point to new_landmark_id
-        for frame_id, kp_idx in obs_from.items():
-            self.frame_landmarks[frame_id][kp_idx] = new_landmark_id
-            # Ensure the sub-dictionaries exist
-            if frame_id not in self.landmark_keypoints[new_landmark_id]:
-                self.landmark_keypoints[new_landmark_id][frame_id] = {}
-            if frame_id in self.landmark_keypoints[landmark_id] and kp_idx in self.landmark_keypoints[landmark_id][frame_id]:
-                self.landmark_keypoints[new_landmark_id][frame_id][kp_idx] = self.landmark_keypoints[landmark_id][frame_id][kp_idx]
-                del self.landmark_keypoints[landmark_id][frame_id][kp_idx]
-                # Clean up empty sub-dicts
-                if not self.landmark_keypoints[landmark_id][frame_id]:
-                    del self.landmark_keypoints[landmark_id][frame_id]
+        # if two landmark containers the same frame_id, delete it since it's not a stable observation.
+        #
+        for frame_id_from, kp_idx_from in obs_from.items():
+            if frame_id_from not in obs_to:
+                self.frame_landmarks[frame_id_from][kp_idx_from] = new_landmark_id
+                # Ensure the sub-dictionaries exist
+                if frame_id_from not in self.landmark_keypoints[new_landmark_id]:
+                    self.landmark_keypoints[new_landmark_id][frame_id_from] = {}
+
+                if frame_id_from in self.landmark_keypoints[landmark_id] and kp_idx_from in self.landmark_keypoints[landmark_id][frame_id_from]:
+                    self.landmark_keypoints[new_landmark_id][frame_id_from][kp_idx_from] = self.landmark_keypoints[landmark_id][frame_id_from][kp_idx_from]
+                    del self.landmark_keypoints[landmark_id][frame_id_from][kp_idx_from]
+                    # Clean up empty sub-dicts
+                    if not self.landmark_keypoints[landmark_id][frame_id_from]:
+                        del self.landmark_keypoints[landmark_id][frame_id_from]
+            else:
+                frame_id_to = frame_id_from
+                kp_idx_to = obs_to[frame_id_from]
+                del self.frame_landmarks[frame_id_from][kp_idx_from]
+                del self.frame_landmarks[frame_id_from][kp_idx_to]
+                del self.landmark_observations[new_landmark_id][frame_id_to]
+                del self.landmark_keypoints[new_landmark_id][frame_id_to]
+
+
+
         # Clean up old landmark_id if empty
         if landmark_id in self.landmark_keypoints and not self.landmark_keypoints[landmark_id]:
             del self.landmark_keypoints[landmark_id]
@@ -230,3 +246,11 @@ class LandmarkTracker:
         # Remove the old landmark
         if landmark_id in self.landmarks:
             del self.landmarks[landmark_id]
+
+    def remove_observations(self, timestamp: int, landmark_id: int):
+        assert landmark_id in self.landmarks
+
+        observations = self.landmark_observations[landmark_id]
+        observations.remove(timestamp)
+        del self.landmark_keypoints[landmark_id][timestamp]
+        del self.frame_landmarks[timestamp][landmark_id]
