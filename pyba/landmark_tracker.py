@@ -14,6 +14,8 @@ import cv2
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 from collections import defaultdict
+import json
+import os
 
 def multiview_triangulation(keypoints_list: List[np.ndarray], camera_poses: List[np.ndarray], K: np.ndarray) -> Tuple[bool, np.ndarray]:
     """
@@ -227,8 +229,6 @@ class LandmarkTracker:
                 del self.landmark_observations[new_landmark_id][frame_id_to]
                 del self.landmark_keypoints[new_landmark_id][frame_id_to]
 
-
-
         # Clean up old landmark_id if empty
         if landmark_id in self.landmark_keypoints and not self.landmark_keypoints[landmark_id]:
             del self.landmark_keypoints[landmark_id]
@@ -254,3 +254,118 @@ class LandmarkTracker:
         observations.remove(timestamp)
         del self.landmark_keypoints[landmark_id][timestamp]
         del self.frame_landmarks[timestamp][landmark_id]
+
+    def save_to_dir(self, dir_path: str):
+        '''
+        Save the landmark tracker to a directory.
+        '''
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path)
+
+        # Convert landmarks to JSON-serializable format
+        landmarks_dict = {}
+        for landmark_id, landmark in self.landmarks.items():
+            landmarks_dict[str(landmark_id)] = {
+                'position_3d': landmark.position_3d.tolist(),
+                'triangulated': landmark.triangulated
+            }
+
+        # save landmarks into a json file
+        with open(os.path.join(dir_path, "landmarks.json"), "w") as f:
+            json.dump(landmarks_dict, f)
+
+        # Convert frame_landmarks to use string keys for JSON serialization
+        frame_landmarks_dict = {}
+        for frame_id, kp_dict in self.frame_landmarks.items():
+            frame_landmarks_dict[str(frame_id)] = {str(k): v for k, v in kp_dict.items()}
+
+        # save frame_landmarks into a json file
+        with open(os.path.join(dir_path, "frame_landmarks.json"), "w") as f:
+            json.dump(frame_landmarks_dict, f)
+
+        # Convert landmark_observations to use string keys for JSON serialization
+        landmark_observations_dict = {}
+        for landmark_id, obs_dict in self.landmark_observations.items():
+            temp_dict = {}
+            for k, v in obs_dict.items():
+                temp_dict[str(k)] = v
+            landmark_observations_dict[str(landmark_id)] = temp_dict
+
+        print(landmark_observations_dict)
+        # save landmark_observations into a json file
+        with open(os.path.join(dir_path, "landmark_observations.json"), "w") as f:
+            json.dump(landmark_observations_dict, f)
+
+        # Convert landmark_keypoints to JSON-serializable format
+        landmark_keypoints_dict = {}
+        for landmark_id, timestamp_dict in self.landmark_keypoints.items():
+            landmark_keypoints_dict[str(landmark_id)] = {}
+            for timestamp, kp_dict in timestamp_dict.items():
+                landmark_keypoints_dict[str(landmark_id)][str(timestamp)] = {}
+                for kp_idx, keypoint in kp_dict.items():
+                    landmark_keypoints_dict[str(landmark_id)][str(timestamp)][str(kp_idx)] = keypoint.tolist()
+
+        # save landmark_keypoints into a json file
+        with open(os.path.join(dir_path, "landmark_keypoints.json"), "w") as f:
+            json.dump(landmark_keypoints_dict, f)
+
+        # save additional metadata
+        metadata = {
+            'next_landmark_id': self.next_landmark_id,
+            'min_track_length': self.min_track_length,
+            'max_reprojection_error': self.max_reprojection_error
+        }
+        with open(os.path.join(dir_path, "metadata.json"), "w") as f:
+            json.dump(metadata, f)
+
+    def load_from_dir(self, dir_path: str):
+        '''
+        Load the landmark tracker from a directory.
+        '''
+        # Load and convert landmarks back to Landmark objects
+        with open(os.path.join(dir_path, "landmarks.json"), "r") as f:
+            landmarks_dict = json.load(f)
+            self.landmarks = {}
+            for landmark_id_str, landmark_data in landmarks_dict.items():
+                landmark_id = int(landmark_id_str)
+                self.landmarks[landmark_id] = Landmark(
+                    position_3d=np.array(landmark_data['position_3d']),
+                    triangulated=landmark_data['triangulated']
+                )
+
+        # Load and convert frame_landmarks back to int keys
+        with open(os.path.join(dir_path, "frame_landmarks.json"), "r") as f:
+            frame_landmarks_dict = json.load(f)
+            self.frame_landmarks = {}
+            for frame_id_str, kp_dict in frame_landmarks_dict.items():
+                frame_id = int(frame_id_str)
+                self.frame_landmarks[frame_id] = {int(k): v for k, v in kp_dict.items()}
+
+        # Load and convert landmark_observations back to int keys
+        with open(os.path.join(dir_path, "landmark_observations.json"), "r") as f:
+            landmark_observations_dict = json.load(f)
+            self.landmark_observations = {}
+            for landmark_id_str, obs_dict in landmark_observations_dict.items():
+                landmark_id = int(landmark_id_str)
+                self.landmark_observations[landmark_id] = {int(k): v for k, v in obs_dict.items()}
+
+        # Load and convert landmark_keypoints back to int keys and numpy arrays
+        with open(os.path.join(dir_path, "landmark_keypoints.json"), "r") as f:
+            landmark_keypoints_dict = json.load(f)
+            self.landmark_keypoints = {}
+            for landmark_id_str, timestamp_dict in landmark_keypoints_dict.items():
+                landmark_id = int(landmark_id_str)
+                self.landmark_keypoints[landmark_id] = {}
+                for timestamp_str, kp_dict in timestamp_dict.items():
+                    timestamp = int(timestamp_str)
+                    self.landmark_keypoints[landmark_id][timestamp] = {}
+                    for kp_idx_str, keypoint_list in kp_dict.items():
+                        kp_idx = int(kp_idx_str)
+                        self.landmark_keypoints[landmark_id][timestamp][kp_idx] = np.array(keypoint_list)
+
+        # Load metadata
+        with open(os.path.join(dir_path, "metadata.json"), "r") as f:
+            metadata = json.load(f)
+            self.next_landmark_id = metadata['next_landmark_id']
+            self.min_track_length = metadata['min_track_length']
+            self.max_reprojection_error = metadata['max_reprojection_error'] 
