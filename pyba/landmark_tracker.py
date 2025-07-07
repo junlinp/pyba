@@ -288,7 +288,7 @@ class LandmarkTracker:
         for landmark_id, obs_dict in self.landmark_observations.items():
             temp_dict = {}
             for k, v in obs_dict.items():
-                temp_dict[str(k)] = v
+                temp_dict[str(k)] = int(v)
             landmark_observations_dict[str(landmark_id)] = temp_dict
 
         print(landmark_observations_dict)
