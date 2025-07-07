@@ -226,6 +226,16 @@ class LandmarkTracker:
                     # Clean up empty sub-dicts
                     if not self.landmark_keypoints[landmark_id][frame_id_from]:
                         del self.landmark_keypoints[landmark_id][frame_id_from]
+
+                if frame_id_from not in self.landmark_descriptors[new_landmark_id]:
+                    self.landmark_descriptors[new_landmark_id][frame_id_from] = {}
+
+                if frame_id_from in self.landmark_descriptors[landmark_id] and kp_idx_from in self.landmark_descriptors[landmark_id][frame_id_from]:
+                    self.landmark_descriptors[new_landmark_id][frame_id_from][kp_idx_from] = self.landmark_descriptors[landmark_id][frame_id_from][kp_idx_from]
+                    del self.landmark_descriptors[landmark_id][frame_id_from][kp_idx_from]
+                    # Clean up empty sub-dicts
+                    if not self.landmark_descriptors[landmark_id][frame_id_from]:
+                        del self.landmark_descriptors[landmark_id][frame_id_from]
             else:
                 frame_id_to = frame_id_from
                 kp_idx_to = obs_to[frame_id_from]
@@ -233,10 +243,13 @@ class LandmarkTracker:
                 del self.frame_landmarks[frame_id_from][kp_idx_to]
                 del self.landmark_observations[new_landmark_id][frame_id_to]
                 del self.landmark_keypoints[new_landmark_id][frame_id_to]
+                del self.landmark_descriptors[new_landmark_id][frame_id_to]
 
         # Clean up old landmark_id if empty
         if landmark_id in self.landmark_keypoints and not self.landmark_keypoints[landmark_id]:
             del self.landmark_keypoints[landmark_id]
+        if landmark_id in self.landmark_descriptors and not self.landmark_descriptors[landmark_id]:
+            del self.landmark_descriptors[landmark_id]
 
         # Optionally, merge 3D position/keypoint (keep the one with more observations or just keep new_landmark_id's)
         # Here, we keep the one with more observations
