@@ -309,7 +309,6 @@ class LandmarkTracker:
                 temp_dict[str(k)] = int(v)
             landmark_observations_dict[str(landmark_id)] = temp_dict
 
-        print(landmark_observations_dict)
         # save landmark_observations into a json file
         with open(os.path.join(dir_path, "landmark_observations.json"), "w") as f:
             json.dump(landmark_observations_dict, f)
