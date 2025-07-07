@@ -141,10 +141,11 @@ class LandmarkTracker:
                 self._merge_landmarks(landmark_id0, landmark_id1)
             else:
                 # else: already the same landmark, nothing to do
-                self.landmark_keypoints[landmark_id0][timestamp0][kp0_idx] = keypoints0[kp0_idx, :]
-                self.landmark_keypoints[landmark_id1][timestamp1][kp1_idx] = keypoints1[kp1_idx, :]
-                self.landmark_descriptors[landmark_id0][timestamp0][kp0_idx] = descriptors0[kp0_idx, :]
-                self.landmark_descriptors[landmark_id1][timestamp1][kp1_idx] = descriptors1[kp1_idx, :]
+                pass
+                # self.landmark_keypoints[landmark_id0][timestamp0][kp0_idx] = keypoints0[kp0_idx, :]
+                # self.landmark_keypoints[landmark_id1][timestamp1][kp1_idx] = keypoints1[kp1_idx, :]
+                # self.landmark_descriptors[landmark_id0][timestamp0][kp0_idx] = descriptors0[kp0_idx, :]
+                # self.landmark_descriptors[landmark_id1][timestamp1][kp1_idx] = descriptors1[kp1_idx, :]
 
     def observation_relations_for_ba(self) -> List[Tuple[int, int, np.ndarray]]:
         '''
