@@ -99,8 +99,10 @@ class LandmarkTracker:
         self.landmark_observations: Dict[int, Dict[int, int]] = {}  # landmark_id -> {frame_id -> kp_idx}
         # landmark_id -> {timestamp -> kp_idx -> keypoint}
         self.landmark_keypoints: Dict[int, Dict[int, Dict[int, np.ndarray]]] = {}
+        # landmark_id -> {timestamp -> kp_idx -> descriptor}
+        self.landmark_descriptors: Dict[int, Dict[int, Dict[int, np.ndarray]]] = {}
 
-    def _get_landmark_id_or_generate(self, image_timestamp: int, keypoint_index:int, keypoint: np.ndarray) -> int:
+    def _get_landmark_id_or_generate(self, image_timestamp: int, keypoint_index:int, keypoint: np.ndarray, descriptor: np.ndarray) -> int:
         """
         Get the landmark ID for a given image timestamp and keypoint index.
         If no landmark is found, generate a new one.
@@ -113,12 +115,13 @@ class LandmarkTracker:
             self.landmarks[self.next_landmark_id] = Landmark(np.zeros(3), False)
             self.landmark_observations[self.next_landmark_id] = {image_timestamp: keypoint_index}
             self.landmark_keypoints[self.next_landmark_id] = {image_timestamp: {keypoint_index: keypoint}}
+            self.landmark_descriptors[self.next_landmark_id] = {image_timestamp: {keypoint_index: descriptor}}
             self.next_landmark_id += 1
 
         return self.frame_landmarks[image_timestamp][keypoint_index]
 
         
-    def add_matched_frame(self, timestamp0: int, timestamp1:int, keypoints0: np.ndarray, keypoints1: np.ndarray, matches: np.ndarray):
+    def add_matched_frame(self, timestamp0: int, timestamp1:int, keypoints0: np.ndarray, keypoints1: np.ndarray, descriptors0: np.ndarray, descriptors1: np.ndarray, matches: np.ndarray):
         """
         Add a matched frame to the landmark tracker.
         Args:
@@ -131,8 +134,8 @@ class LandmarkTracker:
         for match in matches:
             kp0_idx, kp1_idx = match[0], match[1]
             # Check if keypoints are already associated with landmarks
-            landmark_id0 = self._get_landmark_id_or_generate(timestamp0, kp0_idx, keypoints0[kp0_idx, :])
-            landmark_id1 = self._get_landmark_id_or_generate(timestamp1, kp1_idx, keypoints1[kp1_idx, :])
+            landmark_id0 = self._get_landmark_id_or_generate(timestamp0, kp0_idx, keypoints0[kp0_idx, :], descriptors0[kp0_idx, :])
+            landmark_id1 = self._get_landmark_id_or_generate(timestamp1, kp1_idx, keypoints1[kp1_idx, :], descriptors1[kp1_idx, :])
 
             if landmark_id0 != landmark_id1:
                 self._merge_landmarks(landmark_id0, landmark_id1)
@@ -140,7 +143,8 @@ class LandmarkTracker:
                 # else: already the same landmark, nothing to do
                 self.landmark_keypoints[landmark_id0][timestamp0][kp0_idx] = keypoints0[kp0_idx, :]
                 self.landmark_keypoints[landmark_id1][timestamp1][kp1_idx] = keypoints1[kp1_idx, :]
-
+                self.landmark_descriptors[landmark_id0][timestamp0][kp0_idx] = descriptors0[kp0_idx, :]
+                self.landmark_descriptors[landmark_id1][timestamp1][kp1_idx] = descriptors1[kp1_idx, :]
 
     def observation_relations_for_ba(self) -> List[Tuple[int, int, np.ndarray]]:
         '''
@@ -309,6 +313,19 @@ class LandmarkTracker:
         with open(os.path.join(dir_path, "landmark_keypoints.json"), "w") as f:
             json.dump(landmark_keypoints_dict, f)
 
+        # Convert landmark_descriptors to JSON-serializable format
+        landmark_descriptors_dict = {}
+        for landmark_id, timestamp_dict in self.landmark_descriptors.items():
+            landmark_descriptors_dict[str(landmark_id)] = {}
+            for timestamp, kp_dict in timestamp_dict.items():
+                landmark_descriptors_dict[str(landmark_id)][str(timestamp)] = {}
+                for kp_idx, descriptor in kp_dict.items():
+                    landmark_descriptors_dict[str(landmark_id)][str(timestamp)][str(kp_idx)] = descriptor.tolist()
+
+        # save landmark_descriptors into a json file
+        with open(os.path.join(dir_path, "landmark_descriptors.json"), "w") as f:
+            json.dump(landmark_descriptors_dict, f)
+
         # save additional metadata
         metadata = {
             'next_landmark_id': self.next_landmark_id,
@@ -362,6 +379,20 @@ class LandmarkTracker:
                     for kp_idx_str, keypoint_list in kp_dict.items():
                         kp_idx = int(kp_idx_str)
                         self.landmark_keypoints[landmark_id][timestamp][kp_idx] = np.array(keypoint_list)
+
+        # Load and convert landmark_descriptors back to int keys and numpy arrays
+        with open(os.path.join(dir_path, "landmark_descriptors.json"), "r") as f:
+            landmark_descriptors_dict = json.load(f)
+            self.landmark_descriptors = {}
+            for landmark_id_str, timestamp_dict in landmark_descriptors_dict.items():
+                landmark_id = int(landmark_id_str)
+                self.landmark_descriptors[landmark_id] = {}
+                for timestamp_str, kp_dict in timestamp_dict.items():
+                    timestamp = int(timestamp_str)
+                    self.landmark_descriptors[landmark_id][timestamp] = {}
+                    for kp_idx_str, descriptor_list in kp_dict.items():
+                        kp_idx = int(kp_idx_str)
+                        self.landmark_descriptors[landmark_id][timestamp][kp_idx] = np.array(descriptor_list)
 
         # Load metadata
         with open(os.path.join(dir_path, "metadata.json"), "r") as f:
