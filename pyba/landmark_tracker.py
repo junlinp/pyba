@@ -268,7 +268,7 @@ class LandmarkTracker:
     def remove_observations(self, timestamp: int, kp_idx: int, landmark_id: int):
         assert landmark_id in self.landmarks
         observations = self.landmark_observations[landmark_id]
-        observations.remove(timestamp)
+        del observations[timestamp]
         if len(observations) < 2:
             self.landmarks[landmark_id].triangulated = False
 
