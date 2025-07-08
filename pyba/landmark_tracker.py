@@ -274,7 +274,6 @@ class LandmarkTracker:
 
         del self.landmark_keypoints[landmark_id][timestamp][kp_idx]
         del self.landmark_descriptors[landmark_id][timestamp][kp_idx]
-        del self.landmark_observations[landmark_id][timestamp]
         del self.frame_landmarks[timestamp][kp_idx]
 
     def validate_landmark_and_observations(self):
