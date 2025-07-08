@@ -265,13 +265,62 @@ class LandmarkTracker:
         if landmark_id in self.landmarks:
             del self.landmarks[landmark_id]
 
-    def remove_observations(self, timestamp: int, landmark_id: int):
+    def remove_observations(self, timestamp: int, kp_idx: int, landmark_id: int):
         assert landmark_id in self.landmarks
-
         observations = self.landmark_observations[landmark_id]
         observations.remove(timestamp)
-        del self.landmark_keypoints[landmark_id][timestamp]
-        del self.frame_landmarks[timestamp][landmark_id]
+        del self.landmark_keypoints[landmark_id][timestamp][kp_idx]
+        del self.landmark_descriptors[landmark_id][timestamp][kp_idx]
+        del self.landmark_observations[landmark_id][timestamp]
+        del self.frame_landmarks[timestamp][kp_idx]
+
+    def validate_landmark_and_observations(self):
+        for landmark_id, landmark in self.landmarks.items():
+            if landmark.triangulated:
+                if landmark_id not in self.landmark_observations:
+                    print(f"Landmark {landmark_id} not in landmark_observations with landmarks relations")
+                    return False
+                observations = self.landmark_observations[landmark_id]
+
+                for timestamp, kp_idx in observations.items():
+                    if timestamp not in self.landmark_keypoints[landmark_id] or kp_idx not in self.landmark_keypoints[landmark_id][timestamp]:
+                        print(f"Landmark {landmark_id} not in landmark_keypoints[{timestamp}]")
+                        return False
+                    if timestamp not in self.landmark_descriptors[landmark_id] or kp_idx not in self.landmark_descriptors[landmark_id][timestamp]:
+                        print(f"Landmark {landmark_id} not in landmark_descriptors[{timestamp}]")
+                        return False
+
+        
+        for frame_id, kp_dict in self.frame_landmarks.items():
+            for kp_idx, landmark_id in kp_dict.items():
+                if landmark_id not in self.landmarks:
+                    print(f"Landmark {landmark_id} not in landmarks")
+                    return False
+                landmark = self.landmarks[landmark_id]
+                if not landmark.triangulated:
+                    if landmark_id not in self.landmark_observations:
+                        print(f"Landmark {landmark_id} not in landmark_observations")
+                        return False
+                    if landmark_id not in self.landmark_keypoints:
+                        print(f"Landmark {landmark_id} not in landmark_keypoints")
+                        return False
+                    if frame_id not in self.landmark_keypoints[landmark_id]:
+                        print(f"Landmark {landmark_id} not in landmark_keypoints[{frame_id}]")
+                        return False
+                    if kp_idx not in self.landmark_keypoints[landmark_id][frame_id]:
+                        print(f"Landmark {landmark_id} not in landmark_keypoints[{frame_id}][{kp_idx}]")
+                        return False
+                    if landmark_id not in self.landmark_descriptors:
+                        print(f"Landmark {landmark_id} not in landmark_descriptors")
+                        return False
+                    if frame_id not in self.landmark_keypoints[landmark_id]:
+                        print(f"Landmark {landmark_id} not in landmark_descriptors[{frame_id}]")
+                        return False
+                    if kp_idx not in self.landmark_descriptors[landmark_id][frame_id]:
+                        print(f"Landmark {landmark_id} not in landmark_descriptors[{frame_id}][{kp_idx}]")
+                        return False
+        return True
+
 
     def save_to_dir(self, dir_path: str):
         '''

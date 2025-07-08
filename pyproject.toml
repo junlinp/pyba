@@ -9,7 +9,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "pyba"
-version = "0.10.3"
+version = "0.10.4"
 description = "Python Bundle Adjustment and Landmark Tracking for KITTI SFM"
 readme = "README.md"
 license = {text = "MIT"}
