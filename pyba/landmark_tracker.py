@@ -269,6 +269,9 @@ class LandmarkTracker:
         assert landmark_id in self.landmarks
         observations = self.landmark_observations[landmark_id]
         observations.remove(timestamp)
+        if len(observations) < 2:
+            self.landmarks[landmark_id].triangulated = False
+
         del self.landmark_keypoints[landmark_id][timestamp][kp_idx]
         del self.landmark_descriptors[landmark_id][timestamp][kp_idx]
         del self.landmark_observations[landmark_id][timestamp]
