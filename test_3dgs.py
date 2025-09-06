@@ -66,12 +66,11 @@ class Gaussian3D:
         # Create scale matrix
         S = torch.diag_embed(self.scale)
         
-        print(f"R.shape: {R.shape}")
-        print(f"S.shape: {S.shape}")
+        # print(f"R.shape: {R.shape}")
+        # print(f"S.shape: {S.shape}")
         # Covariance = R * S * S^T * R^T
 
         half_cov = R * S
-        print(f"half_cov.shape: {half_cov.shape}")
         cov = torch.matmul(half_cov, half_cov.transpose(1, 2))
         return cov
     
@@ -120,6 +119,7 @@ def sh_basis_l1(dirs: torch.Tensor) -> torch.Tensor:
     dirs: (N, 3) normalized directions [x, y, z]
     return: (N, 4) SH basis values
     """
+    # print(f"dirs: {dirs}")
     x, y, z = dirs[:, 0], dirs[:, 1], dirs[:, 2]
     c0 = 0.5 / math.sqrt(math.pi)
     c1 = math.sqrt(3.0 / (4.0 * math.pi))
@@ -135,9 +135,7 @@ def sh_coeffs_to_rgb(sh_coeffs: torch.Tensor, normal_vector: torch.Tensor) -> to
     """Convert spherical harmonics coefficients to RGB"""
 
     base = sh_basis_l1(normal_vector)
-    print(f"sh_coeffs.shape: {sh_coeffs.shape}")
-    print(f"base.shape: {base.shape}")
-    
+    # print(f"sh base: {base}")
     return torch.clamp(torch.matmul(sh_coeffs, base), min=0.0, max=1.0)
 
 def forward_gs(gs: Gaussian3D, camera_pose: torch.Tensor, K: torch.Tensor, width: int, height: int) -> torch.Tensor:
@@ -275,22 +273,22 @@ def forward_gs_cpu(gs: Gaussian3D, camera_pose: torch.Tensor, K: torch.Tensor, w
     # Transform position
     pos_cam = (R.T @ (position_cpu - t).T).T
 
-    # Project to 2D
-    x_2ds = K_cpu[0, 0] * pos_cam[:, 0] / pos_cam[:, 2] + K_cpu[0, 2]
-    y_2ds = K_cpu[1, 1] * pos_cam[:, 1] / pos_cam[:, 2] + K_cpu[1, 2]
+    mean2D = (K_cpu @ pos_cam.T).T
+    mean2D = mean2D[:, :2] / mean2D[:, 2:3]
+    # print(f"mean2D.shape: {mean2D.shape}")
+    # print(f"mean2D: {mean2D}")
 
     depth = pos_cam[:, 2]
-    normal_vector = position_cpu - pos_cam
+    # print(f"depth: {depth}")
+    normal_vector = position_cpu - t
     normal_vector = normal_vector / torch.norm(normal_vector, dim=1, keepdim=True)
+    # print(f"normal_vector: {normal_vector}")
     
     # Get covariance matrices (simplified for CPU)
-    cov_3d = torch.zeros((position_cpu.shape[0], 3, 3), device=device)
-    for i in range(position_cpu.shape[0]):
-        # Simple diagonal covariance based on scale
-        cov_3d[i] = torch.diag(scale_cpu[i] ** 2)
-    
+    cov_3d = gs.get_covariance_matrix()
+    # print(f"cov_3d : {cov_3d}")
     cov_cam = R.T @ cov_3d @ R
-    
+    # print(f"cov_cam.shape: {cov_cam.shape}")
     # 2D covariance approximation
     N = pos_cam.shape[0]
     J = torch.zeros((N, 2, 3), device=device)
@@ -300,8 +298,11 @@ def forward_gs_cpu(gs: Gaussian3D, camera_pose: torch.Tensor, K: torch.Tensor, w
     J[:, 1, 2] = -K_cpu[1, 1] * pos_cam[:, 1] / (pos_cam[:, 2]**2)
     cov_2d = J @ cov_cam @ J.transpose(1, 2)
 
+    # print(f"cov_2d: {cov_2d}")
+
     # Simple color calculation (no spherical harmonics for now)
     colors = sh_coeffs_to_rgb(sh_coeffs_cpu, normal_vector)
+    # print(f"colors: {colors}")
     
     # Initialize render buffers
     render_image = torch.zeros((height, width, 3), device=device)
@@ -321,24 +322,16 @@ def forward_gs_cpu(gs: Gaussian3D, camera_pose: torch.Tensor, K: torch.Tensor, w
 
     prefix_alpha = torch.ones((height, width, 3), device=device)
     for i, gs_idx in enumerate(tqdm(depth_sorted_indices, desc="Rendering Gaussians")):
-        x_2d = x_2ds[gs_idx]
-        y_2d = y_2ds[gs_idx]
-
-        pos = torch.tensor([y_2d, x_2d], device=device)
-        diff = mesh - pos
+        diff = mesh - mean2D[gs_idx, :]
         cov = torch.linalg.inv(cov_2d[gs_idx])
-
         first = einops.einsum(diff, cov, "H W d, d d -> H W d")
         second = einops.einsum(first, diff, "H W d, H W d -> H W")
         gaussian_value = torch.exp(-0.5 * second)
         alpha = einops.repeat(opacity_cpu[gs_idx] * gaussian_value, "H W -> H W c", c=3)
         color = colors[gs_idx, :, 0]
-        # color = einops.repeat(colors[gs_idx, :, 1], "1 c 1 -> H W c", H=height, W=width)
-        # print(f"alpha.shape: {alpha.shape}")
-        # print(f"color.shape: {color.shape}")
-        # print(f"prefix_alpha.shape: {prefix_alpha.shape}")
         render_image = render_image + alpha * color * prefix_alpha
         prefix_alpha = prefix_alpha * (1 - alpha)
+    # print(f"render_image[0, 0, 0]: {render_image[0, 0, 0]}")
     return render_image
 
 
@@ -350,7 +343,7 @@ def initialize_gaussians_from_image(image: np.ndarray,  K: np.ndarray, depth_est
     fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
     
     # Sample pixels (every 4th pixel for efficiency)
-    step = 20
+    step = 32
     means = []
     for y in range(0, height, step):
         for x in range(0, width, step):
@@ -368,120 +361,6 @@ def initialize_gaussians_from_image(image: np.ndarray,  K: np.ndarray, depth_est
     
     gaussians = Gaussian3D(means, scales, rotations, sh_coeffs, opacities)
     return gaussians
-
-
-
-class KITTIDataset(Dataset):
-    """Dataset for KITTI images and poses"""
-    def __init__(self, reader: KITTIOdometryReader, sequence_id: int, num_frames: int = 10):
-        self.reader = reader
-        self.sequence_id = sequence_id
-        self.num_frames = min(num_frames, len(reader.load_poses(sequence_id)))
-        
-        # Load poses
-        self.poses = reader.load_poses(sequence_id)[:self.num_frames]
-        
-    def __len__(self):
-        return self.num_frames
-    
-    def __getitem__(self, idx):
-        # Load image
-        image = self.reader.load_image(self.sequence_id, idx, 'left')
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        
-        # Get pose
-        pose = self.poses[idx]
-        
-        return {
-            'image': torch.from_numpy(image),
-            'pose': torch.from_numpy(pose).float(),
-            'frame_id': idx
-        }
-
-def train_3dgs():
-    """Train 3D Gaussian Splatting on KITTI data"""
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    
-    # Load KITTI data
-    reader = KITTIOdometryReader()
-    sequence_id = reader.sequences[5]
-    
-    # Load calibration
-    calib = reader.load_calibration(sequence_id)
-    P2 = calib['P2']
-    fx, fy = P2[0, 0], P2[1, 1]
-    cx, cy = P2[0, 2], P2[1, 2]
-    
-    # Load first image for initialization
-    first_image = reader.load_image(sequence_id, 0, 'left')
-    height, width = first_image.shape[:2]
-    
-    print(f"Image size: {width}x{height}")
-    print(f"Camera params: fx={fx}, fy={fy}, cx={cx}, cy={cy}")
-    
-    # Create dataset
-    dataset = KITTIDataset(reader, sequence_id, num_frames=5)
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
-    
-    # Initialize trainable gaussians
-    num_gaussians = 1000  # Reduced for efficiency
-    gaussians = TrainableGaussian3D(num_gaussians, device)
-    
-    # Initialize renderer
-    renderer = DifferentiableGaussianRenderer(width, height, fx, fy, cx, cy, device)
-    
-    # Initialize optimizer
-    optimizer = optim.Adam([
-        {'params': gaussians.positions, 'lr': 0.01},
-        {'params': gaussians.scales, 'lr': 0.01},
-        {'params': gaussians.rotations, 'lr': 0.01},
-        {'params': gaussians.colors, 'lr': 0.01},
-        {'params': gaussians.opacities, 'lr': 0.01}
-    ])
-    
-    # Loss function
-    criterion = nn.MSELoss()
-    
-    # Training loop
-    num_epochs = 100
-    print(f"Starting training for {num_epochs} epochs...")
-    
-    for epoch in range(num_epochs):
-        total_loss = 0.0
-        
-        for batch in dataloader:
-            target_image = batch['image'].to(device)
-            camera_pose = batch['pose'].to(device)
-            
-            # Forward pass
-            rendered_image = renderer(gaussians, camera_pose)
-            
-            # Compute loss
-            loss = criterion(rendered_image, target_image)
-            
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            # Normalize rotations to unit quaternions
-            with torch.no_grad():
-                gaussians.rotations.data = F.normalize(gaussians.rotations.data, dim=1)
-            
-            total_loss += loss.item()
-        
-        avg_loss = total_loss / len(dataloader)
-        
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch}/{num_epochs}, Loss: {avg_loss:.6f}")
-            
-            # Visualize results every 10 epochs
-            if epoch % 20 == 0:
-                visualize_training_results(renderer, gaussians, dataset, device, epoch)
-    
-    print("Training completed!")
-    return gaussians, renderer
 
 def visualize_training_results(renderer, gaussians, dataset, device, epoch):
     """Visualize training results"""
@@ -600,68 +479,71 @@ def create_3dgs_from_kitti():
 
 if __name__ == "__main__":
 
-    # Example: Load KITTI data using KITTIOdometryReader
-    reader = KITTIOdometryReader()
-    sequence_id = reader.sequences[0]
-    left_img = reader.load_image(sequence_id, 0, 'left')
-    right_img = reader.load_image(sequence_id, 0, 'right')
-    poses = reader.load_poses(sequence_id)
-    calib = reader.load_calibration(sequence_id)
-    print("Loaded KITTI data:")
-    print(f"  Sequence: {sequence_id}")
-    print(f"  Left image shape: {left_img.shape}")
-    print(f"  Right image shape: {right_img.shape}")
-    print(f"  Number of poses: {len(poses)}")
-    print(f"  Calibration keys: {list(calib.keys())}")
-
-    K = calib['P2'][:3, :3]
+    left_img = cv2.imread("000000.png")
+    height, width = left_img.shape[:2]
+    camera_pose = np.eye(4)
+    P0 = np.array([[7.070912000000e+02, 0.000000000000e+00, 6.018873000000e+02, 0.000000000000e+00],
+                   [0.000000000000e+00, 7.070912000000e+02, 1.831104000000e+02, 0.000000000000e+00],
+                   [0.000000000000e+00, 0.000000000000e+00, 1.000000000000e+00, 0.000000000000e+00]])
+    K = P0[:3, :3]
 
     gaussians = initialize_gaussians_from_image(left_img, K)
 
-    height, width = left_img.shape[:2]
-    print(f"Height: {height}, Width: {width}")
-
-    # Ensure all tensors are on the same device
-    #device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    device = torch.device('cpu')
-    pose_tensor = torch.from_numpy(poses[0]).float().to(device)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    pose_tensor = torch.from_numpy(camera_pose).float().to(device)
     K_tensor = torch.from_numpy(K).float().to(device)
 
     optimizer = optim.Adam([gaussians.position, gaussians.scale, gaussians.rotation, gaussians.sh_coeffs, gaussians.opacity], lr=1e-2)
-
-    criterion = nn.MSELoss()
-    try:
-        print("Starting rendering iterations...")
-        target_image = torch.from_numpy(left_img).float().to(device) / 255.0
-        for i in range(128):
-            print(f"Iteration {i+1}/5")
-            optimizer.zero_grad()
-            rendered_image = forward_gs_cpu(gaussians, pose_tensor, K_tensor, width, height)
-            print(f"Rendered image shape: {rendered_image.shape}")
-            print(f"Rendered image min/max: {rendered_image.min():.3f}/{rendered_image.max():.3f}")
-            loss = criterion(rendered_image, target_image)
-            print(f"Loss: {loss.item():.3f}")
-            loss.backward()
-            optimizer.step()
-
-        print("Final rendering...")
+    criterion = nn.L1Loss()
+    print("Starting rendering iterations...")
+    # print(f"gaussians.position: {gaussians.position}")
+    # print(f"gaussians.scale: {gaussians.scale}")
+    # print(f"gaussians.rotation: {gaussians.rotation}")
+    # print(f"gaussians.sh_coeffs: {gaussians.sh_coeffs}")
+    # print(f"gaussians.opacity: {gaussians.opacity}")
+    target_image = torch.from_numpy(left_img).float().to(device) / 255.0
+    max_iterations = 1024
+    for i in range(max_iterations):
+        print(f"Iteration {i+1}/{max_iterations}")
+        optimizer.zero_grad()
         rendered_image = forward_gs_cpu(gaussians, pose_tensor, K_tensor, width, height)
-        print(f"Final rendered image shape: {rendered_image.shape}")
-        print(f"Final rendered image min/max: {rendered_image.min():.3f}/{rendered_image.max():.3f}")
+        print(f"Rendered image shape: {rendered_image.shape}")
+        print(f"Rendered image min/max: {rendered_image.min():.3f}/{rendered_image.max():.3f}")
+        loss = criterion(rendered_image, target_image)
+        print(f"Loss: {loss.item():.3f}")
+        loss.backward()
+        optimizer.step()
+
+        # write rendered image to file
+        rendered_image_np = rendered_image.detach().cpu().numpy()
+        rendered_image_np = (rendered_image_np * 255).astype(np.uint8)
+        os.makedirs("rendered_image", exist_ok=True)
+        cv2.imwrite(f"rendered_image/{i}.png", rendered_image_np)
+    print("Final rendering...")
+
+    gaussians.position = gaussians.position.detach()
+    gaussians.scale = gaussians.scale.detach()
+    gaussians.rotation = gaussians.rotation.detach()
+    gaussians.sh_coeffs = gaussians.sh_coeffs.detach()
+    gaussians.opacity = gaussians.opacity.detach()
+    # print(f"gaussians.position: {gaussians.position}")
+    # print(f"gaussians.scale: {gaussians.scale}")
+    # print(f"gaussians.rotation: {gaussians.rotation}")
+    # print(f"gaussians.sh_coeffs: {gaussians.sh_coeffs}")
+    # print(f"gaussians.opacity: {gaussians.opacity}")
+
+    rendered_image = forward_gs_cpu(gaussians, pose_tensor, K_tensor, width, height)
+    print(f"Final rendered image shape: {rendered_image.shape}")
+    print(f"Final rendered image min/max: {rendered_image.min():.3f}/{rendered_image.max():.3f}")
+    # Convert to numpy and display
+    rendered_np = rendered_image.detach().cpu().numpy() 
+    print(f"Numpy image shape: {rendered_np.shape}")
+    print(f"Numpy image min/max: {rendered_np.min():.3f}/{rendered_np.max():.3f}")
         
-        # Convert to numpy and display
-        rendered_np = rendered_image.detach().cpu().numpy() 
-        print(f"Numpy image shape: {rendered_np.shape}")
-        print(f"Numpy image min/max: {rendered_np.min():.3f}/{rendered_np.max():.3f}")
+    plt.figure(figsize=(12, 8))
+    plt.imshow(rendered_np)
+    plt.title('3D Gaussian Splatting Render')
+    plt.colorbar()
+    plt.show()
+    print("Plot displayed successfully!")
         
-        plt.figure(figsize=(12, 8))
-        plt.imshow(rendered_np)
-        plt.title('3D Gaussian Splatting Render')
-        plt.colorbar()
-        plt.show()
-        print("Plot displayed successfully!")
-        
-    except Exception as e:
-        print(f"Error during rendering: {e}")
-        import traceback
-        traceback.print_exc()

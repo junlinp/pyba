@@ -45,6 +45,8 @@ dependencies = [
     "kornia>=0.6.11",
     #"lightglue @ git+https://github.com/cvg/LightGlue.git",
     "pyceres>=0.0.1; sys_platform != 'win32'",  # Optional dependency, not available on Windows
+    "einops",
+    "tqdm",
 ]
 
 [project.optional-dependencies]
